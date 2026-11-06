@@ -10,12 +10,12 @@
 A **Kotlin app for Android Automotive OS (AAOS)** that runs on the car's head-unit screen. It:
 
 1. Lets each driver **select their profile icon and unlock it with a PIN**, which works fully **offline**. Unlocking starts **tracking** (a drive session) for that driver.
-2. Tells the on-board **Game engine** and **Alert engine** who is driving.
+2. Tells the on-board engines (**Game engine** + **Alert engine**, served together over one connection) who is driving.
 3. Shows **real-time alerts** from the Alert engine ("Eyes off the road for too long", "Eyes closed"…) with visuals and sound scaled to severity.
 4. When the drive ends, receives the **drive result** from the Game engine (a **score from 0 to 100** plus **mistakes**). It shows the score, and a **Details** view with each mistake's count and duration (yawn count, time spent looking at the phone…).
 5. **Stores drives locally** and **syncs** them to the backend, queuing them while offline.
 6. Shows **drive history**, **personal statistics**, and **leaderboards** (region or global; day, week, month, year, all time).
-7. Manages the car's **driver profiles**: add a driver (one-time online password login), change PIN, remove a driver.
+7. Manages the car's **driver profiles**: **create an account** or add an existing driver (one-time online password login), change PIN, remove a driver.
 
 ### 1.1 System context
 
@@ -23,10 +23,10 @@ A **Kotlin app for Android Automotive OS (AAOS)** that runs on the car's head-un
                 ┌──────────────────────── Car (AAOS head unit) ─────────────────────────┐
                 │                                                                       │
  ┌───────────┐  │  ┌─────────────┐   WebSocket (JSON)   ┌──────────────────────────────┐ │
- │  Driver   │──┼─▶│  Car App    │◀────────────────────▶│ Game engine  ws://…:8765/ws  │ │
- │ (touch,   │  │  │ (this spec) │                      └──────────────────────────────┘ │
- │  audio)   │◀─┼──│             │◀────────────────────▶┌──────────────────────────────┐ │
- └───────────┘  │  │             │   WebSocket (JSON)   │ Alert engine ws://…:8766/ws  │ │
+ │  Driver   │──┼─▶│  Car App    │◀────────────────────▶│ Engine bridge ws://…:8765/ws │ │
+ │ (touch,   │  │  │ (this spec) │                      │  SafetySystem =              │ │
+ │  audio)   │◀─┼──│             │                      │   Game engine + Alert engine │ │
+ └───────────┘  │  │             │                      │ (simulated_game_engine/)     │ │
                 │  └──────┬──────┘                      └──────────────────────────────┘ │
                 └─────────┼─────────────────────────────────────────────────────────────┘
                           │ HTTPS (REST/JSON), when online
@@ -36,7 +36,7 @@ A **Kotlin app for Android Automotive OS (AAOS)** that runs on the car's head-un
                  └──────────────────┘
 ```
 
-The engines (driver-monitoring camera, wheel sensors, scoring logic) are **outside this spec**. This document defines the **interface contract** the engines must implement (§8). A **mock engine** is provided for development and demos (§15).
+The engine logic (scoring and alert escalation) lives in `RivianHackatonEngine/` and belongs to the engine team. Detection (the driver-monitoring camera and wheel sensors) is **outside this spec**. This document defines the **WebSocket contract** between the app and the engine (§8), and the **bridge/simulator** `simulated_game_engine/`, which wraps the real engine and generates simulated driver events (§15.3).
 
 ---
 
@@ -44,7 +44,7 @@ The engines (driver-monitoring camera, wheel sensors, scoring logic) are **outsi
 
 ### In scope (MVP)
 - AAOS app, landscape, Jetpack Compose UI.
-- Driver profile selection, PIN unlock with lockout, add, remove, change PIN.
+- Driver profile selection, PIN unlock with lockout, **create account on the car**, add existing driver, remove, change PIN.
 - Engine WebSocket clients, session lifecycle, alert presentation (banner, sound, TTS), drive result screen with details.
 - Local persistence (Room) and background sync (WorkManager).
 - History, personal stats, and leaderboard screens (online, with cached offline fallback).
@@ -54,7 +54,7 @@ The engines (driver-monitoring camera, wheel sensors, scoring logic) are **outsi
 ### Out of scope
 - The engines' internal logic (computer vision, scoring).
 - Phone and iOS apps (separate later projects that use the same backend).
-- Account registration on the car (see Open Question #1).
+- Distance tracking. The Game engine has no distance data, so the app shows **driving time** everywhere and never distance.
 - Media, navigation, or any other in-car features.
 
 ---
@@ -93,9 +93,9 @@ The engines (driver-monitoring camera, wheel sensors, scoring logic) are **outsi
 | **PIN** | 4–6 digits chosen by the driver *on this car*. It is **never sent to the backend**. It is used only to unlock the driver profile offline. The same user can have a different PIN on each car. |
 | **Car identity** | `car_id` + `car_token`, obtained once from the backend (§10.1). Used for all backend calls, together with `X-Driver-Id`. |
 | **Session** | A tracking period for one driver. It starts at PIN unlock and ends when the Game engine delivers `drive.result`. It is identified by a client-generated **`session_id` (UUID)**, which also becomes the **drive ID** in the backend. |
-| **Drive** | The persisted result of a session: score, distance, duration, mistakes, events. |
+| **Drive** | The persisted result of a session: score, duration, mistakes, events. (No distance. The engine doesn't provide it.) |
 | **Mistake** | A category of unsafe behavior with `count`, `total_duration_s`, `max_duration_s` (types in §8.5). |
-| **Alert** | A real-time warning from the Alert engine, with severity `INFO` / `WARNING` / `CRITICAL`. |
+| **Alert** | A real-time warning from the Alert engine, with level `VISUAL` / `AUDIO` / `HAPTIC` / `CRITICAL` (the engine's `AlertLevel`). It escalates while the action continues. |
 
 Rules:
 - **Only one active session per car** at any time.
@@ -134,7 +134,7 @@ Rules:
 |---|---|
 | `LOCKED` | Default after boot. Shows driver profile icons, "Add driver", and connection status. Works offline. |
 | `PIN_ENTRY` | Keypad for the chosen profile. Enforces lockout (§10.4). On success → `SESSION_ACTIVE`. |
-| `SESSION_ACTIVE` | `session.start` sent to both engines. The drive screen shows "Tracking: \<name\>", elapsed time, and engine status. Alerts shown live. The secondary screens (history, stats, leaderboard, settings) are reachable **only while parked** (§7.3). |
+| `SESSION_ACTIVE` | `session.start` sent to the engine. The drive screen shows "Tracking: \<name\>", elapsed time, and engine status. Alerts shown live. The secondary screens (history, stats, leaderboard, settings) are reachable **only while parked** (§7.3). |
 | `ENDING` | The driver pressed "End drive" (only possible while parked). The app sends `session.end` and waits up to 15 s for `drive.result`. On timeout it shows "Result not available yet". The result is accepted whenever it arrives later (the engine re-delivers until acked, §8.4). |
 | `RESULT` / `UNLOCKED_IDLE` | Shows the drive result. The driver stays unlocked (no tracking) and can browse history, stats, and the leaderboard. Auto-locks after 5 min without interaction, on ignition off, or on "Lock". "Start new drive" within 2 min of the result needs no PIN. |
 
@@ -144,7 +144,7 @@ The state is owned by a single **`SessionManager`** (a singleton, scoped to the 
 
 ## 6. Screens
 
-General layout: **landscape**, dark theme by default. A persistent **top status bar** shows the current driver's avatar and name, a session indicator (● Tracking), engine connection dots (Game, Alert), an online/offline indicator, and the count of pending uploads. A left **navigation rail** appears only when unlocked and parked.
+General layout: **landscape**, dark theme by default. A persistent **top status bar** shows the current driver's avatar and name, a session indicator (● Tracking), an engine connection dot, an online/offline indicator, and the count of pending uploads. A left **navigation rail** appears only when unlocked and parked.
 
 ### 6.1 Driver Select (Lock screen): `LOCKED`
 - A grid of up to 8 **profile tiles**: circular avatar (initials on `avatar_color`), display name, and a small "sync pending" badge if that driver has unsynced drives.
@@ -163,14 +163,14 @@ General layout: **landscape**, dark theme by default. A persistent **top status 
 ### 6.3 Drive screen: `SESSION_ACTIVE`
 Minimal and glanceable, since this is the screen visible while driving:
 - A large "**Tracking, \<Display name\>**", elapsed time, and a pulsing status dot.
-- Engine status chips: `Game ✓` / `Alert ✓`, or `Reconnecting…` in amber.
+- Engine status chip: `Engine ✓`, or `Reconnecting…` in amber.
 - **No live score.** The engine only scores at the end of the drive.
 - While **parked**, it also shows the "End drive" button and access to the navigation rail.
 - An alerts overlay is drawn on top (§6.9).
 
 ### 6.4 Drive Result: `RESULT`
 - **Score gauge**: a large circular gauge with the integer score in the center. Color bands: **≥ 85 green**, **60–84 amber**, **< 60 red**. A short label: "Excellent", "Good", or "Needs attention".
-- A summary row: duration (h:mm), distance (km, one decimal), date and time.
+- A summary row: driving time (h:mm) and date and time.
 - **Mistake chips**: one chip per mistake type with count > 0 (icon, label, count), sorted by count. "No mistakes 🎉" when empty.
 - Sync status: "Saved to cloud ✓", "Will upload when online", or "Upload failed – tap to retry".
 - Buttons: **Details**, **Start new drive**, **Lock / Switch driver**.
@@ -194,38 +194,56 @@ Minimal and glanceable, since this is the screen visible while driving:
 - **Timeline** (if `events` were provided): a horizontal bar across the drive's duration, with colored marks per event type. Tap a mark to see its type, time, and duration.
 
 ### 6.6 History (parked only)
-- A reverse-chronological list: date and time, car name (if not this car), duration, distance, score badge (colored), and mistake count. A sync icon on unsynced items.
+- A reverse-chronological list: date and time, car name (if not this car), driving time, score badge (colored), and mistake count. A sync icon on unsynced items.
 - Data source: **local Room drives (this car)** merged with **server drives (`GET /drives`, all cars)** when online, de-duplicated by ID. Infinite scroll via cursor.
 - Tap → Drive Details. Server-only drives are fetched with `GET /drives/{id}` and cached.
 - Offline: shows local drives plus previously cached server drives, with an "Offline: showing saved data" banner.
 
 ### 6.7 Statistics (parked only)
 - Period tabs: **Day · Week · Month · Year · All**.
-- KPI tiles: weighted score (big), drives, distance, driving time, best score.
-- Rank tiles: "#14 of 233 in 🇷🇸 RS" and "#412 of 5,120 Global", or "Drive 12 km more to qualify".
+- KPI tiles: weighted score (big), drives, total driving time, best score.
+- Rank tiles: "#14 of 233 in 🇷🇸 RS" and "#412 of 5,120 Global", or "Drive 25 more minutes to qualify".
 - **Trend chart**: weighted score per bucket as a line, with drive count as faint bars (from `series`).
-- **Mistake breakdown**: horizontal bars per type (count), with a "per 100 km" figure.
+- **Mistake breakdown**: horizontal bars per type (count), with a "per hour of driving" figure.
 - Source: `GET /stats/me?period=…`. Cached per period (Room `api_cache`). Offline: the cached response with "Last updated 2 h ago". If nothing is cached, stats are computed locally from Room drives on this car, labeled "Offline: this car only".
 
 ### 6.8 Leaderboard (parked only)
 - Period tabs (as in Stats) and a scope toggle **My region (RS) | Global**.
-- A list of ranks: rank number (🥇🥈🥉 for the top 3), avatar, display name, weighted score, distance. **"My position" is pinned** at the bottom if it's outside the visible page. "Not ranked yet: drive X km more" if not qualified.
+- A list of ranks: rank number (🥇🥈🥉 for the top 3), avatar, display name, weighted score, total driving time. **"My position" is pinned** at the bottom if it's outside the visible page. "Not ranked yet: drive X more minutes" if not qualified.
 - Paged with `limit=50&offset`. Pull to refresh.
 - Requires online. Offline: the last cached board with a timestamp, or "Connect to the internet to see the leaderboard".
 
 ### 6.9 Alerts overlay (all states while a session is active)
 See §9 for the behavior. Visuals:
-- **INFO**: a small toast at the bottom center, icon and text, for 3 s.
-- **WARNING**: a full-width **amber banner** at the top (≥ 120 dp tall, icon and text ≥ 32 sp), with a chime and TTS.
+- **VISUAL / AUDIO**: a full-width **amber banner** at the top (≥ 120 dp tall, icon and text ≥ 32 sp). AUDIO adds a chime and TTS.
+- **HAPTIC**: the same banner in **red**, pulsing, with a double chime and TTS.
 - **CRITICAL**: a **full-screen red overlay** (semi-transparent, pulsing red border, huge icon and text), with an alarm tone and TTS. Stays until `alert.clear` arrives or the maximum display time passes.
 
-### 6.10 Add Driver (from Lock screen, online only)
-1. **Sign in**: username and password fields (on-screen keyboard), "Sign in" button → `POST /cars/me/drivers`. Errors: wrong credentials, car full, offline, server error.
+### 6.10 Add Driver / Create Account (from Lock screen, online only, parked only)
+The first step is a choice: **"I have an account"** or **"Create account"**.
+
+**A. Sign in (existing account)**
+1. Username and password fields (on-screen keyboard), "Sign in" button → `POST /cars/me/drivers`. Errors: wrong credentials, car full, offline, server error.
 2. **Welcome \<display name\>**: confirms the profile (avatar, region).
-3. **Choose PIN**: enter a 4–6 digit PIN, then confirm it. Rejects trivial PINs (`0000`, `1234`, all-same, strictly sequential) with a warning, though the driver can override the warning.
-4. Done → the profile appears on the lock screen. **Optional:** "Start driving now" goes straight to `SESSION_ACTIVE`.
-- If the user is **already on this car**, skip to "Reset PIN?" (the same flow as Forgot PIN).
-- Only available while parked.
+3. → **Choose PIN** (below).
+
+**B. Create account (new user)**
+1. Form fields:
+   - **Username**: 3–32 characters, `[a-z0-9_.]`, lowercased as typed. Validated inline.
+   - **Display name**: 1–40 characters.
+   - **Password** and **Confirm password**: minimum 8 characters, with a show/hide toggle.
+   - **Region**: a searchable country picker (`GET /meta/regions`, or the bundled list as fallback). Defaults to the system locale's country.
+   - **Avatar color**: a pick from 8 preset colors.
+   - Email: **not asked for on the car** (optional, for the phone app later).
+2. "Create account" → `POST /cars/me/drivers/register`. Server errors are mapped to their fields (for example `USERNAME_TAKEN` → "This username is taken" under Username).
+3. → **Choose PIN**.
+
+**Choose PIN (both paths):** enter a 4–6 digit PIN, then confirm it. Trivial PINs (`0000`, `1234`, all-same, strictly sequential) get a warning, which the driver can override. Done → the profile appears on the lock screen. **Optional:** "Start driving now" goes straight to `SESSION_ACTIVE`.
+
+Other rules:
+- If the signed-in user is **already on this car**, go straight to "Reset PIN?" (the same flow as Forgot PIN).
+- The password is never stored on the car.
+- If the app is killed between account creation and PIN setup, the profile exists on the server but not locally. The driver simply uses "I have an account" next time, which re-links idempotently.
 
 ### 6.11 Driver Settings (unlocked, parked)
 - **Change PIN**: current PIN → new PIN → confirm.
@@ -244,6 +262,8 @@ See §9 for the behavior. Visuals:
 
 ### 7.2 Driving state
 `CarUxRestrictionsManager` is observed and exposed as `StateFlow<DrivingState>` (`PARKED` / `MOVING`). The rule is `isRequiresDistractionOptimization()` → `MOVING`.
+
+**Testing driving state on the emulator:** use the AAOS emulator's *Extended controls → Car data* (set gear and speed), or inject vehicle properties over adb, for example `adb shell cmd car_service inject-vhal-event 0x11600207 20` (PERF_VEHICLE_SPEED = 20 m/s) and `adb shell cmd car_service inject-vhal-event 0x11400400 8` (GEAR_SELECTION = DRIVE). Check the property IDs against the emulator image you use. The debug driving-state override (§15.1) is the fallback.
 
 ### 7.3 Behavior while moving
 
@@ -265,18 +285,31 @@ See §9 for the behavior. Visuals:
 
 ## 8. Engine Integration Contract
 
-Both engines run **WebSocket servers** on the car. The app is the **client**. A single JSON envelope format is shared by both engines.
+### 8.0 Where the engines come from
+- The real engines live in **`RivianHackatonEngine/`** (owned by the engine team). It is an **in-process Python library**: `SafetySystem` (in `main.py`) combines `AlertEngine` (real-time alerts with escalation) and `GameEngine` (end-of-drive score). Its API is `start_drive()`, `on_event(action, is_active, ts)`, `tick(ts)`, `end_drive(ts)`. It has **no network layer**.
+- **`simulated_game_engine/`** (§15.3) is the **bridge**. It imports `SafetySystem` **unchanged**, feeds it driver-action events (simulated for now, from real detection later), and exposes it to the car app over the WebSocket protocol below.
+- One process runs both engines, so the car app uses **one WebSocket connection** that carries both alerts and drive results.
 
-### 8.1 Endpoints and connection
-| Engine | Default URL | Configurable |
+```
+ driver-action events            ┌──────────── simulated_game_engine (bridge) ─────────────┐
+ (CLI / scenarios now,  ───────▶ │  SafetySystem (RivianHackatonEngine, imported as-is)    │
+  camera detection later)        │    ├─ AlertEngine ──▶ alert / alert.clear ──┐           │
+                                 │    └─ GameEngine  ──▶ drive.result ─────────┤           │
+                                 │                         WebSocket server ws://…:8765/ws │
+                                 └─────────────────────────────────────────────┬───────────┘
+                                                                               ▼
+                                                                         Car app (client)
+```
+
+### 8.1 Endpoint and connection
+| | Default URL | Configurable |
 |---|---|---|
-| Game engine | `ws://127.0.0.1:8765/ws` | Debug settings / `BuildConfig` |
-| Alert engine | `ws://127.0.0.1:8766/ws` | Debug settings / `BuildConfig` |
+| Engine (both) | `ws://127.0.0.1:8765/ws` | Debug settings / `BuildConfig` |
 
-- The emulator connects to a mock engine on the host at `ws://10.0.2.2:8765/ws` and `:8766`.
+- The emulator connects to the bridge on the host at `ws://10.0.2.2:8765/ws`.
 - OkHttp `pingInterval = 10 s`. A missing pong → reconnect.
 - Reconnect with **exponential backoff**: 0.5, 1, 2, 4, 8 s, capped at 15 s, with ±20% jitter. Retries continue indefinitely while the foreground service runs.
-- Connections are owned by the **foreground service** (`EngineConnectionService`, type `connectedDevice` or `specialUse`). They stay up while the app is in the background (for example while navigation is in the foreground).
+- The connection is owned by the **foreground service** (`EngineConnectionService`, type `connectedDevice` or `specialUse`). It stays up while the app is in the background (for example while navigation is in the foreground).
 
 ### 8.2 Envelope
 
@@ -291,26 +324,29 @@ Both engines run **WebSocket servers** on the car. The app is the **client**. A 
 ```
 - Unknown `type`s are logged and ignored. Unknown fields are ignored (`ignoreUnknownKeys = true`).
 - `v` is the protocol version. If the engine replies with an `error` of code `UNSUPPORTED_VERSION`, the app shows "Engine incompatible".
+- All timestamps on the wire are **wall-clock ISO-8601 UTC**. The engine library works in monotonic seconds; the bridge converts (§15.3).
 
 ### 8.3 Message catalogue
 
 | Direction | `type` | Payload | Notes |
 |---|---|---|---|
-| App → both | `hello` | `{ "app_version": "1.0.0", "car_id": "uuid", "protocol": 1 }` | Sent on every (re)connect |
-| Engine → App | `hello` | `{ "engine": "game" \| "alert", "engine_version": "1.3.0", "active_session_id": "uuid" \| null }` | Lets the app detect a session mismatch |
-| App → both | `session.start` | `{ "session_id": "uuid", "user_id": "uuid", "display_name": "Mihajlo", "car_id": "uuid", "started_at": "ts" }` | Must be **idempotent** for the same `session_id` |
+| App → Engine | `hello` | `{ "app_version": "1.0.0", "car_id": "uuid", "protocol": 1 }` | Sent on every (re)connect |
+| Engine → App | `hello` | `{ "engine_version": "0.1.0", "active_session_id": "uuid" \| null, "supported_actions": ["PHONE_CALL", "EYES_OFF_ROAD"] }` | Lets the app detect a session mismatch. `supported_actions` = what the engine is configured to detect (debug info only). |
+| App → Engine | `session.start` | `{ "session_id": "uuid", "user_id": "uuid", "display_name": "Mihajlo", "car_id": "uuid", "started_at": "ts" }` | Must be **idempotent** for the same `session_id` |
 | Engine → App | `session.ack` | `{ "session_id": "uuid" }` | If no ack arrives within 5 s, the app re-sends (max 3), then shows "Engine not responding" |
-| App → both | `session.end` | `{ "session_id": "uuid", "reason": "MANUAL" \| "DRIVER_SWITCH" \| "IGNITION_OFF" \| "APP_SHUTDOWN" }` | The Game engine responds with `drive.result` |
-| Game → App | `drive.result` | see §8.5 | May arrive **spontaneously** (the engine detected the drive end) or after `session.end` |
-| App → Game | `drive.result.ack` | `{ "session_id": "uuid" }` | Sent **after** the result is persisted in Room |
-| Alert → App | `alert` | `{ "alert_id": "uuid", "session_id": "uuid", "type": "EYES_CLOSED", "severity": "CRITICAL", "message": "Eyes closed for too long!", "started_at": "ts", "ttl_s": 10 }` | `message` is optional. The app has default localized texts per type. |
-| Alert → App | `alert.clear` | `{ "alert_id": "uuid" }` | The condition has ended |
-| Either → App | `error` | `{ "code": "NO_ACTIVE_SESSION", "message": "…", "ref_msg_id": "uuid" }` | Logged. Shown in the debug view. |
+| App → Engine | `session.end` | `{ "session_id": "uuid", "reason": "MANUAL" \| "DRIVER_SWITCH" \| "IGNITION_OFF" \| "APP_SHUTDOWN" }` | The engine responds with `drive.result` |
+| Engine → App | `drive.result` | see §8.5 | May arrive **spontaneously** (the engine detected the drive end) or after `session.end` |
+| App → Engine | `drive.result.ack` | `{ "session_id": "uuid" }` | Sent **after** the result is persisted in Room |
+| Engine → App | `alert` | `{ "alert_id": "uuid", "session_id": "uuid", "type": "EYES_OFF_ROAD", "level": "AUDIO", "message": "Eyes on the road.", "duration_so_far_s": 1.2, "started_at": "ts", "ttl_s": 10 }` | One `alert_id` per **occurrence** of an action. Each escalation of the same occurrence is re-sent with the **same `alert_id`** and a higher `level`. |
+| Engine → App | `alert.clear` | `{ "alert_id": "uuid" }` | The action ended (`on_event(action, is_active=False)`) or the session ended |
+| Engine → App | `error` | `{ "code": "NO_ACTIVE_SESSION", "message": "…", "ref_msg_id": "uuid" }` | Logged. Shown in the debug view. |
+
+**Alert levels** come straight from the engine's `AlertLevel` enum: `VISUAL` (1) < `AUDIO` (2) < `HAPTIC` (3) < `CRITICAL` (4). `NONE` is never sent. The app treats an unknown level as `AUDIO`.
 
 ### 8.4 Reliability rules
 1. **Session resumption:** after a reconnect during `SESSION_ACTIVE`, the app sends `hello` and then re-sends `session.start` with the **same** `session_id`. The engine must continue the existing session, not restart it.
 2. **Session mismatch:** if the engine's `hello.active_session_id` differs from the app's, the app sends `session.end` (reason `DRIVER_SWITCH`) for the engine's session, then `session.start` for its own.
-3. **At-least-once results:** the Game engine keeps each `drive.result` until it receives `drive.result.ack`. On every reconnect it re-sends any unacked results. The app de-duplicates by `session_id` (Room primary key).
+3. **At-least-once results:** the engine keeps each `drive.result` until it receives `drive.result.ack`. On every reconnect it re-sends any unacked results. The app de-duplicates by `session_id` (Room primary key).
 4. A result whose `session_id` matches no session the app knows is still persisted, attributed via its `user_id` (included in the payload). If that user has no profile on this car, it is dropped with an error log.
 5. Alerts are **fire-and-forget**. If the connection is lost, alerts that were showing are auto-cleared after their `ttl_s` (default 10 s).
 
@@ -324,56 +360,72 @@ This is identical to the backend upload body (backend spec §8.6), minus `id`, p
   "user_id": "uuid",
   "started_at": "2026-11-06T08:01:12Z",
   "ended_at":   "2026-11-06T08:34:40Z",
-  "distance_km": 21.437,
+  "distance_km": null,
   "score": 87.5,
-  "engine_version": "game-engine/1.3.0",
+  "engine_version": "rivian-hackathon-engine/0.1.0",
   "mistakes": [
-    { "type": "EYES_OFF_ROAD", "count": 4, "total_duration_s": 9.6, "max_duration_s": 3.1 },
-    { "type": "YAWN", "count": 2, "total_duration_s": null, "max_duration_s": null }
+    { "type": "PHONE_CALL",    "count": 1, "total_duration_s": 8.0, "max_duration_s": 8.0 },
+    { "type": "EYES_OFF_ROAD", "count": 1, "total_duration_s": 3.0, "max_duration_s": 3.0 }
   ],
   "events": [
-    { "type": "EYES_OFF_ROAD", "started_at": "2026-11-06T08:05:03Z", "duration_s": 3.1 }
+    { "type": "PHONE_CALL", "started_at": "2026-11-06T08:01:22Z", "duration_s": 8.0 }
   ],
-  "extra": { }
+  "extra": { "penalties": { "PHONE_CALL": 9.0, "EYES_OFF_ROAD": 6.0 } }
 }
 ```
 
-Known mistake types (shared with the backend): `EYES_OFF_ROAD`, `PHONE_USE`, `EYES_CLOSED`, `YAWN`, `HANDS_OFF_WHEEL`, `PHONE_CALL`, `EATING_DRINKING`, `SMOKING`. Any `^[A-Z][A-Z0-9_]{1,39}$` value is accepted.
+**Mapping from the engine's `DriveReport`** (the bridge does this):
+
+| `drive.result` | From `DriveReport` |
+|---|---|
+| `score` | `score` (rounded to 2 decimals) |
+| `started_at` / `ended_at` | Wall-clock times the bridge recorded at `session.start` / end |
+| `mistakes[].type` | Action key, **UPPER_CASED** (`phone_call` → `PHONE_CALL`) |
+| `mistakes[].count` / `total_duration_s` / `max_duration_s` | `ActionSummary.count` / `total_duration` / `longest_duration` |
+| `events[]` | `occurrences` that were **penalized** (above the grace period, consistent with `count`), times converted to wall clock |
+| `extra.penalties` | `ActionSummary.penalty` per type |
+
+**Mistake types.** The canonical names (shared with the backend) are `EYES_OFF_ROAD`, `PHONE_USE`, `EYES_CLOSED`, `YAWN`, `HANDS_OFF_WHEEL`, `PHONE_CALL`, `EATING_DRINKING`, `SMOKING`. The engine's action keys are their **lower-case** forms (`eyes_off_road`, `phone_call`, …). Today the engine configures only `phone_call` and `eyes_off_road`; the rest arrive as the engine team adds them. The app **upper-cases every incoming type** and accepts any `^[A-Z][A-Z0-9_]{1,39}$` value.
 
 Validation in the app, before persisting (invalid → log, then ack anyway so the engine doesn't loop, and show "Result invalid"): `0 ≤ score ≤ 100`, `ended_at ≥ started_at`, counts ≥ 0.
 
-### 8.6 Alert types and default texts
+### 8.6 Alert texts and icons
 
-| `type` | Default severity | Default text (EN) | Icon |
-|---|---|---|---|
-| `EYES_OFF_ROAD` | WARNING | "Eyes on the road" | 👁 |
-| `PHONE_USE` | WARNING | "Put the phone down" | 📱 |
-| `EYES_CLOSED` | CRITICAL | "Wake up! Eyes closed" | 😴 |
-| `DROWSINESS` | WARNING | "You seem tired. Consider a break" | ☕ |
-| `HANDS_OFF_WHEEL` | WARNING → CRITICAL (engine escalates) | "Hands on the wheel" | ✋ |
-| `PHONE_CALL` | WARNING | "Use hands-free for calls" | 📞 |
-| `EATING_DRINKING` | INFO | "Focus on driving" | 🍔 |
-| `SMOKING` | INFO | "Focus on driving" | 🚬 |
-| *(unknown)* | as sent | `message`, or "Drive carefully" | ⚠️ |
+The engine **always sends `message`**, and the app shows it as-is. The app uses its own default text only when `message` is missing or blank:
 
-The engine's `severity` and `message` always take precedence over these defaults.
+| `type` | Default text (EN), fallback only | Icon |
+|---|---|---|
+| `EYES_OFF_ROAD` | "Eyes on the road" | 👁 |
+| `PHONE_USE` | "Put the phone down" | 📱 |
+| `EYES_CLOSED` | "Wake up! Eyes closed" | 😴 |
+| `YAWN` / `DROWSINESS` | "You seem tired. Consider a break" | ☕ |
+| `HANDS_OFF_WHEEL` | "Hands on the wheel" | ✋ |
+| `PHONE_CALL` | "Use hands-free for calls" | 📞 |
+| `EATING_DRINKING` | "Focus on driving" | 🍔 |
+| `SMOKING` | "Focus on driving" | 🚬 |
+| *(unknown)* | "Drive carefully" | ⚠️ |
+
+The severity is **never** decided by the app. It always uses the engine's `level`.
 
 ---
 
 ## 9. Alerts Behavior
 
-### 9.1 Presentation
+### 9.1 Presentation (by engine `level`)
 
-| Severity | Visual | Sound | TTS | Display time |
+| Level | Visual | Sound | TTS | Display time |
 |---|---|---|---|---|
-| INFO | Toast (bottom) | none | no | 3 s |
-| WARNING | Amber top banner | short chime (`chime_warning.ogg`) | yes, once | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
-| CRITICAL | Full-screen red pulsing overlay | repeating alarm tone (`alarm_critical.ogg`) every 2 s | yes, repeated every 6 s | until `alert.clear`, max `ttl_s` (default 15 s) |
+| `VISUAL` | Amber top banner (≥ 120 dp, icon + text ≥ 32 sp) | none | no | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
+| `AUDIO` | Amber top banner | short chime (`chime_warning.ogg`) | yes, once | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
+| `HAPTIC` | **Red** top banner, pulsing | double chime | yes, once | until `alert.clear`, max `ttl_s` (default 10 s) |
+| `CRITICAL` | Full-screen red pulsing overlay | repeating alarm tone (`alarm_critical.ogg`) every 2 s | yes, repeated every 6 s | until `alert.clear`, max `ttl_s` (default 15 s) |
+
+- **`HAPTIC` vibration:** the app has no access to seat or steering-wheel vibration on AAOS. For the MVP, `HAPTIC` is shown as the escalated red banner + sound. Real haptics (via a vehicle API, if the OEM exposes one) are future work.
 
 ### 9.2 Queueing and deduplication
-- Only **one** visual alert is shown at a time. Priority is CRITICAL > WARNING > INFO, and a higher severity **preempts** a lower one. The preempted alert resumes if it is still active.
-- The same `alert_id` → update in place (for example an escalation from WARNING to CRITICAL).
-- The same `type` within a **10 s cooldown** after its clear → the visual is shown, but the chime and TTS are not replayed (to avoid nagging).
+- Only **one** visual alert is shown at a time. Priority is `CRITICAL` > `HAPTIC` > `AUDIO` > `VISUAL`, and a higher level **preempts** a lower one. The preempted alert resumes if it is still active.
+- The same `alert_id` → update in place. This is how the engine's **escalation** arrives (for example `eyes_off_road`: `AUDIO` at 1 s → `HAPTIC` at 2.5 s → `CRITICAL` at 4 s). On an escalation, the new level's sound and TTS play.
+- The same `type` within a **10 s cooldown** after its clear → the visual is shown, but the chime and TTS are not replayed at the same level (to avoid nagging). This is on top of any cooldown the engine applies.
 - Audio uses `AudioFocusRequest(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)` with `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, so media is ducked rather than stopped.
 - TTS language follows the system locale. TTS initialization failure → sound only.
 
@@ -447,7 +499,7 @@ data class DriveEntity(
     val carId: String,
     val startedAt: Long, val endedAt: Long,
     val durationS: Int,
-    val distanceKm: Double?,
+    val distanceKm: Double?,                 // reserved, always null today
     val score: Double,
     val engineVersion: String?,
     val rawJson: String,                     // exact drive.result payload (for upload)
@@ -472,7 +524,7 @@ data class ApiCacheEntity(val userId: String, val key: String,   // e.g. "stats:
                           val json: String, val fetchedAt: Long)
 ```
 
-DataStore holds: `car_id`, `car_name`, active session (`session_id`, `user_id`, `started_at`, state), engine URLs (debug), `api_base_url` (debug), and feature flags.
+DataStore holds: `car_id`, `car_name`, active session (`session_id`, `user_id`, `started_at`, state), engine URL (debug), `api_base_url` (debug), and feature flags.
 `SecureStore` (Keystore-encrypted) holds `car_token`.
 
 ### 11.2 Drive persistence flow
@@ -512,6 +564,7 @@ DataStore holds: `car_id`, `car_name`, active session (`session_id`, `user_id`, 
 |---|---|
 | Car registration | `POST /api/v1/cars/register` |
 | Add driver / Forgot PIN | `POST /api/v1/cars/me/drivers` |
+| Create account | `POST /api/v1/cars/me/drivers/register`, with `GET /api/v1/meta/regions` for the region picker (a static list is bundled as fallback) |
 | Remove driver | `DELETE /api/v1/cars/me/drivers/{user_id}` |
 | Refresh profile data | `GET /api/v1/users/me` (driver-scoped). Run on unlock when online, to update display name, region, and color. |
 | Upload drive | `POST /api/v1/drives` |
@@ -526,8 +579,20 @@ Connectivity is observed with `ConnectivityManager.NetworkCallback` → `StateFl
 
 ## 13. Architecture and Code Organization
 
+**Repository layout** (monorepo):
 ```
-android/
+RIVIAN_hackathon/
+├── backend/                  # FastAPI + PostgreSQL (backend_specification.md)
+├── car_frontend/             # This Android Automotive app (Gradle project root)
+├── simulated_game_engine/    # WebSocket bridge around the real engine + driver-event simulator (§15.3)
+├── RivianHackatonEngine/     # Real Game + Alert engine library (engine team; do not modify)
+├── frontend_specification.md
+└── backend_specification.md
+```
+
+**Inside `car_frontend/`:**
+```
+car_frontend/
 ├── app/                              # Application, MainActivity, NavHost, Hilt setup, theme
 ├── core/
 │   ├── model/                        # Domain models: Driver, Drive, Mistake, Alert, Severity, Period…
@@ -535,7 +600,7 @@ android/
 │   ├── database/                     # Room DB, DAOs, entities, migrations
 │   ├── datastore/                    # Preferences + SecureStore (Keystore)
 │   ├── network/                      # Retrofit API, DTOs, interceptors, connectivity monitor
-│   ├── engine/                       # EngineClient (OkHttp WS), protocol DTOs, GameEngine/AlertEngine facades, FakeEngine
+│   ├── engine/                       # EngineClient (OkHttp WS), protocol DTOs, EngineGateway facade, FakeEngine
 │   ├── car/                          # DrivingStateMonitor (UX restrictions), VehicleSignals (optional)
 │   └── designsystem/                 # Car theme, typography, ScoreGauge, Keypad, AlertBanner, charts
 ├── data/                             # Repositories: DriverRepository, DriveRepository, StatsRepository,
@@ -559,7 +624,7 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 
 **Key components**
 - `EngineClient`: a generic WebSocket client: connect, reconnect, send, `incoming: SharedFlow<EngineMessage>`, `status: StateFlow<ConnectionStatus>`.
-- `GameEngine` / `AlertEngine`: typed facades over `EngineClient`.
+- `EngineGateway`: a typed facade over `EngineClient`: `startSession()`, `endSession()`, `alerts: Flow<AlertEvent>`, `results: Flow<DriveResult>`.
 - `SessionManager`: the state machine from §5. It coordinates the engines, persistence, and navigation events.
 - `AlertPresenter`: the queue, priority, and cooldown from §9. It drives the Compose overlay state, `SoundPool`, `TextToSpeech`, and notifications.
 - `DrivingStateMonitor`: exposes `PARKED`/`MOVING`. A Compose `LocalDrivingState` gates UI.
@@ -573,26 +638,63 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 - **Motion:** subtle. Only the CRITICAL overlay pulses (1 Hz). Respects the system "remove animations" setting.
 - **Glanceability:** a driver should be able to read any screen shown while driving in < 2 s.
 - **Accessibility:** content descriptions on all icons. Mistake info is conveyed by icon + text + color (never color alone).
-- **Localization:** all strings in `strings.xml`. English for the MVP, with structure ready for Serbian and other languages. Units: km (metric) by default, with miles behind a setting later.
-- **Formatting:** score as an integer. Distance with 1 decimal. Durations `s` / `m:ss` / `h:mm`. Dates relative ("Today 08:34", "Yesterday", then `dd MMM`).
+- **Localization:** all strings in `strings.xml`. English for the MVP, with structure ready for Serbian and other languages. No distance units are needed for now.
+- **Formatting:** score as an integer. Durations `s` / `m:ss` / `h:mm`. Dates relative ("Today 08:34", "Yesterday", then `dd MMM`).
 
 ---
 
 ## 15. Debug Tools and Mock Engine
 
 ### 15.1 Debug settings screen (debug builds, or a 5 s long-press on the car name)
-- Edit the Game and Alert engine URLs and the API base URL. Toggle **FakeEngine (in-app)**.
+- Edit the engine URL and the API base URL. Toggle **FakeEngine (in-app)**.
 - Live connection log (the last 200 engine messages, in and out).
-- Buttons: send a test alert (each severity), simulate `drive.result`, force sync, re-register the car, wipe all local data.
+- Buttons: send a test alert (each level), simulate `drive.result`, force sync, re-register the car, wipe all local data.
 - Toggle the driving-state override (`PARKED`/`MOVING`) for testing on the emulator.
 
 ### 15.2 FakeEngine (in-app)
-- An implementation of the `GameEngine` and `AlertEngine` facades that needs no network: it emits random alerts every 20–60 s during a session and produces a randomized `drive.result` on `session.end`.
+- An implementation of the `EngineGateway` facade that needs no network: it emits random alerts every 20–60 s during a session and produces a randomized `drive.result` on `session.end`.
 
-### 15.3 Mock engine server (`tools/mock_engine/`)
-- A small **Python** (`websockets`) script that runs both servers (`:8765` and `:8766`) and implements the full §8 protocol, including session resumption and unacked-result re-delivery.
-- An interactive CLI: `alert EYES_CLOSED critical`, `clear`, `end` (emits `drive.result` with a configurable score and mistakes), `scenario demo` (a scripted 2-minute drive with a handful of alerts, then the result).
-- Used for demos and as the reference implementation for the real engine team.
+### 15.3 Simulated engine / engine bridge (`simulated_game_engine/`)
+A standalone **Python 3.12** project in the top-level folder `simulated_game_engine/`. It has two jobs:
+1. **Bridge:** wrap the real engine library (`SafetySystem` from `RivianHackatonEngine/main.py`) and serve the §8 WebSocket protocol to the car app.
+2. **Simulator:** stand in for the camera/sensor detection layer by generating **driver-action events** (`on_event(action, is_active)`) from a CLI, random auto mode, or scripted scenarios.
+
+Scores and alerts therefore come from the **real** engine logic. When real detection exists later, only the event source changes.
+
+**Rules (from `RULES.md`):**
+- `RivianHackatonEngine/` is **imported, never modified**. Add its path to `sys.path` (`--engine-path`, default `../RivianHackatonEngine`), because its modules use top-level imports (`from AlertEngine.AlertEngine import …`).
+- Anything the bridge needs changed in the engine goes into `requested_changes.md` (see the list at the end of this section).
+
+**Stack:** `websockets` (asyncio), `pydantic` for message models, `prompt_toolkit` (or plain `aioconsole`) for the CLI. Run with `python -m simulated_game_engine` (or `uv run`). Options: `--host 0.0.0.0 --port 8765 --engine-path ../RivianHackatonEngine --tick-ms 100`.
+
+**Bridge behavior:**
+- **Protocol:** implements every message in §8.3 and all reliability rules in §8.4: idempotent `session.start`, `hello` with `active_session_id` and `supported_actions` (= the keys of the engine's configs, upper-cased), session resumption after reconnect, and keeping and re-sending unacked `drive.result` messages.
+- **Session:** `session.start` → `SafetySystem.start_drive(t)`. `session.end` (or CLI `end`) → `end_drive(t)` → map `DriveReport` → `drive.result` (mapping table in §8.5).
+- **Clock:** the bridge passes its own `time.monotonic()` values as `timestamp` to the engine. At session start it records `(wall_start, mono_start)` and converts any engine time `t` to wall clock as `wall_start + (t - mono_start)`.
+- **Events:** each simulated event calls `on_event(action_lowercase, is_active, t)`. If it returns an `Alert`, the bridge sends `alert`.
+- **Ticker:** every `--tick-ms` it calls `tick(t)`, so alerts escalate while an action continues. A returned `Alert` is sent as `alert`.
+- **Alert IDs:** the engine has no IDs. The bridge keeps `action → alert_id`: a new UUID when an action starts (the first alert for it), reused for every escalation of that occurrence. When the action ends (`is_active=False`), the bridge sends `alert.clear` for that ID and forgets it. At session end it clears all IDs.
+- **Mapping `Alert` → `alert`:** `type = action.upper()`, `level = alert.level.name`, `message = alert.message`, `duration_so_far_s = alert.duration_so_far`, `started_at` = the occurrence start converted to wall clock.
+- Actions the engine doesn't configure are still forwarded to `on_event` (the engine ignores them). The CLI prints a warning so the operator knows nothing will happen.
+
+**Simulator inputs (CLI commands):**
+- `status`: connection, active session, active actions, configured actions.
+- `start <action>` / `stop <action>`: begin or end a continuous action (for example `start phone_call`).
+- `pulse <action> <seconds>`: start now and stop automatically after N seconds.
+- `auto on|off`: random driver behavior during a session. Every 15–45 s it picks a configured action and holds it for 0.5–7 s, so you see escalations and clears.
+- `scenario demo`: a scripted ~2-minute drive: a short phone call (VISUAL → AUDIO), eyes off road for 5 s (AUDIO → HAPTIC → CRITICAL), a clean stretch, then `end`.
+- `end`: end the drive and send `drive.result`.
+- `drop`: close the connection, to test reconnects. `quit`.
+
+**Tests:** pytest for the protocol state machine (resume, re-delivery, idempotency), the `DriveReport` → `drive.result` mapping, alert-ID assignment and clears, and the clock conversion. Tests use the real `SafetySystem` with explicit timestamps.
+
+**README:** run instructions, including the emulator note: the app connects to `ws://10.0.2.2:8765/ws`.
+
+**Changes to request from the engine team** (in `requested_changes.md`, not done by the bridge):
+1. `AlertEngine.tick()` returns only the single most severe alert when several actions escalate in the same tick, so the others are lost. Ask for it to return all of them (or add a public `evaluate(action, ts)`).
+2. Use the canonical action keys for new actions: `eyes_closed`, `yawn`, `hands_off_wheel`, `phone_use`, `eating_drinking`, `smoking`. These map 1:1 to the shared mistake types.
+3. Optional: emit an explicit clear signal from `AlertEngine` (their current TODO). The bridge already derives clears from `is_active=False`.
+4. Optional: expose an engine version string (`__version__`), so `drive.result.engine_version` is meaningful.
 
 ---
 
@@ -603,14 +705,14 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 | Unit | PIN hashing and verification, the lockout policy (including clock tampering), `SessionManager` transitions (all edges in §5), `AlertPresenter` priority, preemption, and cooldown, protocol (de)serialization, and the mapping of results into entities and DTOs. |
 | Integration | `EngineClient` against `MockWebServer` WebSocket: reconnect, resume, re-delivery, and de-duplication. `SyncDrivesWorker` with `MockWebServer` (every response class in §11.3) using `WorkManagerTestInitBuilder`. Room DAO tests. |
 | UI (Compose) | Driver select states, PIN entry (auto-submit, lockout UI), Result and Details rendering for 0 or many mistakes and unknown types, gating of screens by driving state. |
-| End-to-end (manual / scripted) | AAOS emulator + `tools/mock_engine` + the backend in Docker: add driver → PIN → drive with alerts → result → sync → appears in stats and leaderboard. Then repeat with airplane mode (queued sync). |
+| End-to-end (manual / scripted) | AAOS emulator + `simulated_game_engine/` + the backend in Docker: add driver → PIN → drive with alerts → result → sync → appears in stats and leaderboard. Then repeat with airplane mode (queued sync). |
 
 ---
 
 ## 17. Implementation Milestones (hackathon)
 
 1. **M1 Shell:** AAOS project, theme, navigation, the driving-state monitor, debug screen, FakeEngine.
-2. **M2 Profiles:** car registration, Add driver, PIN set and unlock, lockout, lock-screen grid.
+2. **M2 Profiles:** car registration, Create account, Add driver, PIN set and unlock, lockout, lock-screen grid.
 3. **M3 Engines:** `EngineClient`, the session lifecycle, `drive.result` persistence and ack, the Result and Details screens.
 4. **M4 Alerts:** overlay UI, sound, TTS, queue and priority, background notifications.
 5. **M5 Sync and data:** `SyncDrivesWorker`, History, Stats, Leaderboard with caching.
@@ -620,7 +722,7 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 
 ## 18. Future Work
 
-- Create account on the car, QR pairing with the phone app (scan → link the driver without typing a password).
+- QR pairing with the phone app (scan → link the driver without typing a password).
 - Live in-drive coaching (a running score, if the engine supports streaming).
 - Weekly summaries, achievements and streaks, and push notifications to the phone.
 - Per-driver car preferences (seat, mirrors, climate) via vehicle APIs.
@@ -633,10 +735,10 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 
 | # | Topic | Assumption | To confirm |
 |---|---|---|---|
-| 1 | Account creation | Accounts are created outside the car for now (Swagger/seed, later the phone app). | Add a "Create account" step on the car for the demo? |
-| 2 | Engine transport | WebSocket servers on localhost, ports 8765 and 8766, implementing §8. | Engine team agrees? Do they run on the same head unit or a separate ECU (in which case the host IP changes)? |
-| 3 | Distance | The Game engine includes `distance_km` in `drive.result`. | If not, the backend switches to duration weighting, or the app reads the odometer (needs a car permission). |
-| 4 | Distraction optimization | The app is installed as an OEM-trusted app, or demoed on the emulator. | Verify on the target head unit. |
-| 5 | PIN entry while moving | Allowed (minimal keypad), so a passenger swap or a late unlock can still start tracking. | Prefer blocking unlock while moving? |
+| 1 | Account creation | ✅ **Resolved:** accounts can be created on the car (§6.10). | – |
+| 2 | Engine transport | ✅ **Resolved:** one WebSocket (`:8765`) served by `simulated_game_engine/`, which wraps the real `SafetySystem` from `RivianHackatonEngine/`. | On the real car: does the engine run on the head unit or a separate ECU (in which case the host IP changes)? |
+| 3 | Distance | ✅ **Resolved:** no distance data. Driving time is used everywhere. | – |
+| 4 | Distraction optimization | The app is installed as an OEM-trusted app, or demoed on the emulator. If the OS blocks the UI while moving anyway, the safety-critical path still works: alerts come through heads-up notifications, sound, and TTS from the foreground service (§9.3), and engine connections and sessions keep running. Only the screens are hidden. | Verify on the target head unit. |
+| 5 | PIN entry while moving | ✅ **Resolved:** allowed. A driver can unlock and start tracking after the car is already moving. | – |
 | 6 | Auto-lock timing | 5 min idle after a drive. "Start new drive" without a PIN within 2 min. | Values OK? |
 | 7 | Alert texts | English defaults per §8.6. The engine may override them. | Final copy and languages? |

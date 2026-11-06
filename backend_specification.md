@@ -131,7 +131,7 @@ backend/
 | **User** | A person who drives. Has a unique username, a password, a display name, and a home region. |
 | **Car** | A physical vehicle (one installation of the car app). Has an ID and a secret car token. VIN is optional. |
 | **CarDriver** | Link meaning "user U has logged in on car C". It authorizes car C to act for U. Can be revoked. |
-| **Drive** | One driving session's result: start and end time, distance, score, and mistakes. Belongs to one user and one car. |
+| **Drive** | One driving session's result: start and end time (and therefore duration), score, and mistakes. Belongs to one user and one car. There is **no distance data**. The engine doesn't provide it, so all weighting uses driving time. |
 | **DriveMistake** | Per-drive summary for one mistake type: count, total duration, longest single occurrence. |
 | **DriveEvent** | Optional raw occurrences inside a drive (type, start time, duration), used for timelines. |
 | **RefreshToken** | Rotating refresh token for user JWT sessions (phone and iOS apps). |
@@ -162,13 +162,13 @@ Mistake types are **strings**, so the Game engine can add new types without a da
 
 All windows are **rolling** and computed in UTC from the request time. A drive belongs to a window by its **`ended_at`**.
 
-| `period` | Window | Stats time-series bucket | Default leaderboard minimum distance (`min_distance_km`) |
+| `period` | Window | Stats time-series bucket | Default leaderboard minimum driving time (`min_minutes`) |
 |---|---|---|---|
-| `day` | last 24 h | 1 hour | 5 km |
-| `week` | last 7 days | 1 day | 20 km |
-| `month` | last 30 days | 1 day | 50 km |
-| `year` | last 365 days | 1 month (calendar, UTC) | 200 km |
-| `all` | all time | 1 month (calendar, UTC) | 200 km |
+| `day` | last 24 h | 1 hour | 10 min |
+| `week` | last 7 days | 1 day | 45 min |
+| `month` | last 30 days | 1 day | 120 min |
+| `year` | last 365 days | 1 month (calendar, UTC) | 480 min |
+| `all` | all time | 1 month (calendar, UTC) | 480 min |
 
 All thresholds can be changed through settings (§11).
 
@@ -240,7 +240,7 @@ CREATE TABLE drives (
     started_at       TIMESTAMPTZ  NOT NULL,
     ended_at         TIMESTAMPTZ  NOT NULL,
     duration_s       INTEGER      NOT NULL CHECK (duration_s >= 0),
-    distance_km      NUMERIC(8,3) CHECK (distance_km >= 0),   -- nullable if engine can't provide
+    distance_km      NUMERIC(8,3) CHECK (distance_km >= 0),   -- reserved: always NULL today (engine has no distance); kept for future
     score            NUMERIC(5,2) NOT NULL CHECK (score BETWEEN 0 AND 100),
     engine_version   VARCHAR(40),
     raw_payload      JSONB        NOT NULL,                  -- full Game-engine result, for forward compatibility
@@ -325,7 +325,7 @@ Why the car acts for the driver instead of holding user tokens:
 - Base path: **`/api/v1`**. JSON only (`Content-Type: application/json; charset=utf-8`).
 - Field names in **snake_case**. Clients map them with serializer annotations.
 - Timestamps in ISO-8601 (`2026-11-06T12:34:56Z`). IDs are UUIDv4 strings.
-- Numbers: `score` is returned as a float with 2 decimal places. `distance_km` is a float with up to 3 decimal places.
+- Numbers: `score` is returned as a float with 2 decimal places. Durations are integers in seconds (`*_s`). Mistake durations are floats.
 - Pagination: **cursor-based** for drive history (`?limit=20&cursor=<opaque>`, response `next_cursor`). **Offset-based** for leaderboards (`?limit=50&offset=0`).
 - OpenAPI: `GET /openapi.json`. Swagger UI is at `/docs` and ReDoc at `/redoc`.
 - CORS: configurable allow-list (only needed for future web clients).
@@ -373,6 +373,8 @@ Every response carries an `X-Request-Id` header. If the client sent one, the sam
 | GET | `/api/v1/cars/me` | Car | Car info and active linked drivers |
 | PATCH | `/api/v1/cars/me` | Car | Update name, model, VIN |
 | POST | `/api/v1/cars/me/drivers` | Car | **Link a driver**: username + password → user profile |
+| POST | `/api/v1/cars/me/drivers/register` | Car | **Create an account on the car** and link it in one step |
+| GET | `/api/v1/meta/regions` | none | List of selectable regions (ISO code + name), for the sign-up form |
 | DELETE | `/api/v1/cars/me/drivers/{user_id}` | Car | Unlink a driver (soft revoke) |
 | GET | `/api/v1/users/me/cars` | User | Cars linked to me (for the future phone app) |
 | DELETE | `/api/v1/users/me/cars/{car_id}` | User | Revoke a car's access to me (for the future phone app) |
@@ -429,6 +431,18 @@ Every response carries an `X-Request-Id` header. If the client sent one, the sam
 - A previously revoked link is reactivated (`revoked_at = NULL`).
 - The service enforces a **maximum of 8 active drivers per car** → `409 CAR_DRIVER_LIMIT`.
 
+**`POST /api/v1/cars/me/drivers/register`** (header `Authorization: Car …`). The car's "Create account" flow calls this.
+```json
+// request: same body and validation as POST /auth/register
+{ "username": "mixa", "password": "correct horse battery", "display_name": "Mihajlo",
+  "region_code": "RS", "email": null, "avatar_color": "#E8603C" }
+// 201 response
+{ "user": { /* UserProfile */ }, "linked_at": "…" }
+```
+- Creates the user **and** the `car_drivers` link in **one transaction**. No JWT tokens are returned, because the car acts through its car token.
+- Errors: `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, `409 CAR_DRIVER_LIMIT` (checked **before** the user is created), `422 VALIDATION_ERROR`.
+- The created account is a normal account. The same username and password work later in the phone and iOS apps via `/auth/login`.
+
 **`DELETE /api/v1/cars/me/drivers/{user_id}`** → `204`. This sets `revoked_at`. Drives already uploaded are kept.
 
 **`GET /api/v1/cars/me`** → `{ "car_id", "name", "model", "vin", "drivers": [UserProfile + "linked_at", "last_used_at"] }`
@@ -444,7 +458,7 @@ The body is the Game engine's `drive.result` payload (frontend spec §8) **plus*
   "id": "6b1e6f0a-3c55-4d0b-9f9d-2f8c3f0d6a11",
   "started_at": "2026-11-06T08:01:12Z",
   "ended_at":   "2026-11-06T08:34:40Z",
-  "distance_km": 21.437,
+  "distance_km": null,          // optional, reserved; engine currently sends null or omits it
   "score": 87.5,
   "engine_version": "game-engine/1.3.0",
   "mistakes": [
@@ -477,7 +491,7 @@ Behavior:
 | `id` | UUID |
 | `started_at`, `ended_at` | `ended_at ≥ started_at`. `ended_at ≤ now + 10 min` (allows for car clock skew). Duration ≤ 24 h. `started_at ≥ 2024-01-01`. |
 | `score` | 0 ≤ score ≤ 100 |
-| `distance_km` | null, or 0 ≤ distance ≤ 2000 |
+| `distance_km` | optional. null, or 0 ≤ distance ≤ 2000. Stored, but not used in any calculation. |
 | `mistakes[].type` | `^[A-Z][A-Z0-9_]{1,39}$`. Unknown types are accepted and stored. |
 | `mistakes[].count` | integer 0–100000 |
 | `mistakes[].*_duration_s` | null, or 0 ≤ value ≤ drive duration |
@@ -491,7 +505,7 @@ Behavior:
 {
   "items": [
     { "id": "uuid", "car": { "id": "uuid", "name": "Hackathon R1S" },
-      "started_at": "…", "ended_at": "…", "duration_s": 2008, "distance_km": 21.437,
+      "started_at": "…", "ended_at": "…", "duration_s": 2008,
       "score": 87.5,
       "mistakes_summary": { "total_count": 7, "types": ["EYES_OFF_ROAD", "YAWN", "HANDS_OFF_WHEEL"] } }
   ],
@@ -511,18 +525,17 @@ The list is ordered by `ended_at DESC, id DESC`. The cursor is a base64url encod
   "window_start": "2026-10-30T12:00:00Z",
   "window_end":   "2026-11-06T12:00:00Z",
   "drive_count": 9,
-  "total_distance_km": 184.2,
   "total_duration_s": 31440,
   "avg_score": 84.1,               // simple mean
-  "weighted_score": 86.3,          // distance-weighted (the ranking metric)
+  "weighted_score": 86.3,          // driving-time-weighted (the ranking metric)
   "best_score": 97.0,
   "worst_score": 61.5,
   "mistakes": [
-    { "type": "EYES_OFF_ROAD", "count": 31, "total_duration_s": 74.2, "per_100_km": 16.8 },
-    { "type": "YAWN",          "count": 12, "total_duration_s": null, "per_100_km": 6.5 }
+    { "type": "EYES_OFF_ROAD", "count": 31, "total_duration_s": 74.2, "per_hour": 3.55 },
+    { "type": "YAWN",          "count": 12, "total_duration_s": null, "per_hour": 1.37 }
   ],
   "series": [
-    { "bucket_start": "2026-10-31T00:00:00Z", "drive_count": 2, "distance_km": 40.1,
+    { "bucket_start": "2026-10-31T00:00:00Z", "drive_count": 2, "duration_s": 4210,
       "weighted_score": 88.0, "mistake_count": 5 }
   ],
   "rank": {
@@ -531,9 +544,9 @@ The list is ordered by `ended_at DESC, id DESC`. The cursor is a base64url encod
   }
 }
 ```
-- `per_100_km` is `null` when the total distance is 0.
+- `per_hour` = count ÷ (total_duration_s / 3600). It is `null` when the total driving time is 0.
 - `series` buckets follow §5.4. Empty buckets are **included** with zeros and nulls, so charts get a continuous x-axis. `generate_series` produces the buckets.
-- `rank` uses the same computation as the leaderboard (§9.2). If the user has not reached the period's minimum distance, `qualified=false` and `rank=null`.
+- `rank` uses the same computation as the leaderboard (§9.2). If the user has not reached the period's minimum driving time, `qualified=false` and `rank=null`.
 
 ### 8.9 Leaderboard
 
@@ -543,26 +556,32 @@ The list is ordered by `ended_at DESC, id DESC`. The cursor is a base64url encod
   "period": "month",
   "region": "RS",
   "window_start": "…", "window_end": "…",
-  "min_distance_km": 50,
+  "min_minutes": 120,
   "total_ranked": 233,
   "entries": [
     { "rank": 1, "user_id": "uuid", "username": "ana", "display_name": "Ana",
-      "avatar_color": "#2BB673", "weighted_score": 96.42, "drive_count": 31, "distance_km": 812.4 }
+      "avatar_color": "#2BB673", "weighted_score": 96.42, "drive_count": 31, "driving_time_s": 61200 }
   ],
   "me": {
-    "rank": 14, "weighted_score": 88.10, "drive_count": 12, "distance_km": 260.3,
-    "qualified": true, "distance_needed_km": 0
+    "rank": 14, "weighted_score": 88.10, "drive_count": 12, "driving_time_s": 19800,
+    "qualified": true, "minutes_needed": 0
   },
   "generated_at": "…"
 }
 ```
-- `me.rank` is `null` when the user is not qualified or has `leaderboard_visible=false`. When not qualified, `distance_needed_km` shows how much more the user must drive.
+- `me.rank` is `null` when the user is not qualified or has `leaderboard_visible=false`. When not qualified, `minutes_needed` shows how many more minutes the user must drive (rounded up).
 - Leaderboard entries expose only `username`, `display_name`, and `avatar_color`. No car or drive data.
 
 **`GET /api/v1/meta/mistake-types`**
 ```json
 [ { "type": "EYES_OFF_ROAD", "label": "Eyes off road", "has_duration": true }, … ]
 ```
+
+**`GET /api/v1/meta/regions`**
+```json
+[ { "code": "RS", "name": "Serbia" }, { "code": "US", "name": "United States" }, … ]
+```
+All ISO 3166-1 countries from `pycountry`, sorted by name. The car's sign-up form uses this list, and the car app also bundles a static copy for when the call fails.
 
 ---
 
@@ -573,22 +592,23 @@ The list is ordered by `ended_at DESC, id DESC`. The cursor is a base64url encod
 The **weighted score** for a user in a window is:
 
 ```
-weighted_score = Σ(score_i × w_i) / Σ(w_i)      where w_i = distance_km_i  (default)
+weighted_score = Σ(score_i × w_i) / Σ(w_i)      where w_i = duration_s_i  (driving time)
 ```
 
-- **Weight mode** is set by the setting `RANKING_WEIGHT = distance | duration` and defaults to `distance`. In `duration` mode, `w_i = duration_s / 60` and the minimum thresholds are read from `MIN_MINUTES_*` instead of `MIN_KM_*`. This fallback covers the case where the Game engine can't report distance.
-- When the mode is `distance`, drives with `distance_km` null or 0 have zero weight. They still show in history and `avg_score`, but they don't affect `weighted_score` or ranking.
-- **Qualification:** Σ(w_i) ≥ the period's minimum (§5.4). This stops a single short perfect drive from topping the board.
-- **Ordering:** `weighted_score DESC`, then `Σw DESC` (more driving wins ties), then `user_id` (deterministic). The rank function is `RANK()`, so ties share a rank.
+- **Weighting is by driving time**, because the Game engine has no distance data. A 60-minute drive counts six times as much as a 10-minute drive.
+- Drives with `duration_s = 0` have zero weight. They still show in history and `avg_score`.
+- **Qualification:** Σ(duration_s) ≥ the period's `min_minutes × 60` (§5.4). This stops a single short perfect drive from topping the board.
+- **Ordering:** `weighted_score DESC`, then total driving time `DESC` (more driving wins ties), then `user_id` (deterministic). The rank function is `RANK()`, so ties share a rank.
+- If the engine provides distance in the future, distance weighting can be added as an alternative (see Future work). `distance_km` is already stored when sent.
 
 ### 9.2 Leaderboard query (reference)
 
 ```sql
 WITH agg AS (
     SELECT d.user_id,
-           SUM(d.score * COALESCE(d.distance_km, 0)) / NULLIF(SUM(COALESCE(d.distance_km, 0)), 0) AS weighted_score,
-           SUM(COALESCE(d.distance_km, 0)) AS distance_km,
-           COUNT(*)                        AS drive_count
+           SUM(d.score * d.duration_s) / NULLIF(SUM(d.duration_s), 0) AS weighted_score,
+           SUM(d.duration_s) AS driving_time_s,
+           COUNT(*)          AS drive_count
     FROM drives d
     JOIN users u ON u.id = d.user_id
     WHERE (:window_start IS NULL OR d.ended_at >= :window_start)
@@ -596,11 +616,11 @@ WITH agg AS (
       AND u.leaderboard_visible
       AND (:region = 'GLOBAL' OR u.region_code = :region)
     GROUP BY d.user_id
-    HAVING SUM(COALESCE(d.distance_km, 0)) >= :min_distance_km
+    HAVING SUM(d.duration_s) >= :min_minutes * 60
 ),
 ranked AS (
     SELECT agg.*,
-           RANK() OVER (ORDER BY weighted_score DESC, distance_km DESC) AS rank,
+           RANK() OVER (ORDER BY weighted_score DESC, driving_time_s DESC) AS rank,
            COUNT(*) OVER () AS total_ranked
     FROM agg
 )
@@ -609,7 +629,7 @@ FROM ranked r JOIN users u ON u.id = r.user_id
 ORDER BY rank, r.user_id
 LIMIT :limit OFFSET :offset;
 ```
-The `me` row is computed by the same CTE filtered to `user_id = :me`. When the user is not qualified, a separate aggregation without `HAVING` fills `distance_needed_km`.
+The `me` row is computed by the same CTE filtered to `user_id = :me`. When the user is not qualified, a separate aggregation without `HAVING` fills `minutes_needed`.
 
 ### 9.3 Personal stats query
 - Totals: one aggregate over `drives` for user and window, using `FILTER` clauses.
@@ -649,9 +669,7 @@ The `me` row is computed by the same CTE filtered to `user_id = :me`. When the u
 | `REFRESH_TOKEN_TTL_DAYS` | `30` | |
 | `CAR_PROVISIONING_KEY` | *(required)* | Shared secret for `POST /cars/register` |
 | `MAX_DRIVERS_PER_CAR` | `8` | |
-| `RANKING_WEIGHT` | `distance` | `distance` \| `duration` |
-| `MIN_KM_DAY` / `_WEEK` / `_MONTH` / `_YEAR` / `_ALL` | `5 / 20 / 50 / 200 / 200` | Leaderboard qualification (distance mode) |
-| `MIN_MINUTES_DAY` / `_WEEK` / `_MONTH` / `_YEAR` / `_ALL` | `10 / 45 / 120 / 480 / 480` | Leaderboard qualification (duration mode) |
+| `MIN_MINUTES_DAY` / `_WEEK` / `_MONTH` / `_YEAR` / `_ALL` | `10 / 45 / 120 / 480 / 480` | Leaderboard qualification (minimum driving time per period) |
 | `LEADERBOARD_CACHE_TTL_S` | `60` | |
 | `CORS_ORIGINS` | `` | Comma-separated |
 | `LOG_LEVEL` | `INFO` | |
@@ -730,8 +748,8 @@ Target: about 80% line coverage on `services/` and `repositories/`, and every en
 
 | # | Topic | Assumption made | To confirm |
 |---|---|---|---|
-| 1 | User registration for the demo | Registration happens through Swagger UI or the seed script. The car app only *logs in* existing users. | Add a "Create account" screen on the car for the demo? |
-| 2 | Distance from Game engine | `drive.result` includes `distance_km`. If it can't, switch `RANKING_WEIGHT=duration`. | Can the Game engine report distance? |
+| 1 | User registration | ✅ **Resolved:** accounts can be created on the car (`POST /cars/me/drivers/register`) as well as via `/auth/register`. | – |
+| 2 | Distance from Game engine | ✅ **Resolved:** no distance data. Ranking and stats are weighted by driving time. | – |
 | 3 | Rolling vs calendar windows | Rolling windows (last 24 h, 7 d, 30 d, 365 d). | Is "this calendar week/month" preferred? |
 | 4 | Region granularity | Country (ISO alpha-2). | Is country enough? |
 | 5 | Score precision | Stored with 2 decimals, displayed as an integer. | Is the engine score an integer or a float? |

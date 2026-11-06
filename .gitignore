@@ -37,3 +37,22 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local agent handover notes (device-local, never commit)
+HAND_OVER.md
+
+# Android / Gradle (car_frontend/)
+.gradle/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Python tooling
+.mypy_cache/
+.ruff_cache/
