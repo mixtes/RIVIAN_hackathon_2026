@@ -1,0 +1,40 @@
+[project]
+name = "simulated-game-engine"
+version = "0.1.0"
+description = "WebSocket bridge around the RivianHackatonEngine SafetySystem, plus a driver-event simulator"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "websockets>=14.0",
+    "pydantic>=2.7",
+    "prompt_toolkit>=3.0.43",
+]
+
+[project.scripts]
+sim-engine = "simulated_game_engine.app:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/simulated_game_engine"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
