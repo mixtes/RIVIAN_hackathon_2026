@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -54,7 +54,7 @@ fun TrendChart(points: List<TrendPoint>, modifier: Modifier = Modifier) {
         points.forEachIndexed { i, p ->
             if (p.driveCount > 0) {
                 val bh = h * 0.35f * p.driveCount / maxCount
-                drawRect(CarColors.Accent.copy(alpha = 0.25f), Offset(i * step + step * 0.2f, h - bh), Size(step * 0.6f, bh))
+                drawRect(CarColors.Teal.copy(alpha = 0.30f), Offset(i * step + step * 0.2f, h - bh), Size(step * 0.6f, bh))
             }
         }
         val path = Path()
@@ -64,9 +64,9 @@ fun TrendChart(points: List<TrendPoint>, modifier: Modifier = Modifier) {
             val x = i * step + step / 2
             val y = h - (s / 100.0 * h).toFloat()
             if (!started) { path.moveTo(x, y); started = true } else path.lineTo(x, y)
-            drawCircle(CarColors.score(s), 6f, Offset(x, y))
+            drawCircle(CarColors.score(s), 9f, Offset(x, y))
         }
-        drawPath(path, CarColors.OnDark, style = Stroke(4f))
+        drawPath(path, CarColors.TealSoft, style = Stroke(5f))
     }
 }
 
@@ -77,17 +77,17 @@ fun MistakeBars(rows: List<Triple<String, Int, Double?>>, modifier: Modifier = M
     Column(modifier) {
         rows.forEach { (type, count, perHour) ->
             val info = MistakeTypes.info(type)
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(vertical = Space.XS), verticalAlignment = Alignment.CenterVertically) {
                 Text("${info.icon} ${info.label}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(300.dp))
-                Box(Modifier.weight(1f).height(28.dp)) {
+                Box(Modifier.weight(1f).height(28.dp).clip(CarShapes.Pill).background(CarColors.SurfaceHigh)) {
                     Box(
-                        Modifier.fillMaxWidth(count.toFloat() / max).height(28.dp).clip(RoundedCornerShape(8.dp))
-                            .background(CarColors.Amber),
+                        Modifier.fillMaxWidth(count.toFloat() / max).height(28.dp).clip(CarShapes.Pill)
+                            .background(CarColors.Orange),
                     )
                 }
                 Text(
-                    "  $count" + (perHour?.let { " · %.1f/h".format(it) } ?: ""),
-                    style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(180.dp),
+                    "$count" + (perHour?.let { " · %.1f/h".format(it) } ?: ""),
+                    style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = Space.M).width(180.dp),
                 )
             }
         }
@@ -95,8 +95,8 @@ fun MistakeBars(rows: List<Triple<String, Int, Double?>>, modifier: Modifier = M
 }
 
 private val timelineColors = listOf(
-    Color(0xFFF5A524), Color(0xFFE5484D), Color(0xFF4F7DF3), Color(0xFFB57BEE),
-    Color(0xFF2BB673), Color(0xFFFF8A65), Color(0xFF4DD0E1), Color(0xFFFFD54F),
+    Color(0xFFE08A67), Color(0xFFE5534B), Color(0xFF5FB3E8), Color(0xFFB79CF0),
+    Color(0xFF45C08A), Color(0xFFF2B33D), Color(0xFF8FD3D1), Color(0xFFF0A5C0),
 )
 
 fun timelineColor(type: String): Color {
@@ -118,11 +118,11 @@ fun DriveTimeline(startedAt: Long, endedAt: Long, events: List<DriveEvent>, modi
                 }
             }.semantics { contentDescription = "Drive timeline with ${events.size} events" },
         ) {
-            drawRect(CarColors.SurfaceHigh, Offset(0f, size.height * 0.35f), Size(size.width, size.height * 0.3f))
+            drawRoundRect(CarColors.SurfaceHigh, Offset(0f, size.height * 0.35f), Size(size.width, size.height * 0.3f), CornerRadius(size.height * 0.15f))
             events.forEach { e ->
                 val x = ((e.startedAt - startedAt).toFloat() / total) * size.width
                 val w = (((e.durationS ?: 0.5) * 1000) / total * size.width).toFloat().coerceAtLeast(6f)
-                drawRect(timelineColor(MistakeTypes.normalize(e.type)), Offset(x, 0f), Size(w, size.height))
+                drawRoundRect(timelineColor(MistakeTypes.normalize(e.type)), Offset(x, 0f), Size(w, size.height), CornerRadius(4f))
             }
         }
         selected?.let { e ->
@@ -130,7 +130,7 @@ fun DriveTimeline(startedAt: Long, endedAt: Long, events: List<DriveEvent>, modi
             Text(
                 "${info.icon} ${info.label} · at ${Formatters.elapsed(e.startedAt - startedAt)} · ${Formatters.shortDuration(e.durationS)}",
                 style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 8.dp).clickable { selected = null },
+                modifier = Modifier.padding(top = Space.S).clickable { selected = null },
             )
         }
     }

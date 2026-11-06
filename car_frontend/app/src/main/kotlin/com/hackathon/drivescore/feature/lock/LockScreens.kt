@@ -16,11 +16,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,6 +41,7 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,6 +50,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hackathon.drivescore.R
 import com.hackathon.drivescore.core.designsystem.Avatar
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarDimens
+import com.hackathon.drivescore.core.designsystem.CarShapes
+import com.hackathon.drivescore.core.designsystem.GhostButton
+import com.hackathon.drivescore.core.designsystem.SectionCard
+import com.hackathon.drivescore.core.designsystem.Space
 import com.hackathon.drivescore.core.designsystem.Keypad
 import com.hackathon.drivescore.core.designsystem.PinDots
 import com.hackathon.drivescore.core.designsystem.PrimaryButton
@@ -71,21 +78,24 @@ fun DriverSelectScreen(
     vm: LockViewModel = hiltViewModel(),
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize().padding(32.dp)) {
+    Column(Modifier.fillMaxSize().padding(CarDimens.ScreenPadding)) {
         Text(stringResource(R.string.who_is_driving), style = MaterialTheme.typography.headlineLarge)
-        VSpace(24.dp)
+        VSpace(Space.XL)
         if (s.loaded && s.tiles.isEmpty()) {
             Column(Modifier.weight(1f).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text(stringResource(R.string.no_drivers_yet), style = MaterialTheme.typography.headlineMedium)
-                VSpace(24.dp)
-                PrimaryButton(stringResource(R.string.add_driver), onAddDriver, enabled = s.canAdd, modifier = Modifier.size(width = 360.dp, height = 96.dp))
+                Text(stringResource(R.string.no_drivers_yet), style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
+                VSpace(Space.L)
+                PrimaryButton(stringResource(R.string.add_driver), onAddDriver, enabled = s.canAdd, modifier = Modifier.width(360.dp))
                 if (!s.canAdd) {
-                    VSpace(12.dp)
+                    VSpace(Space.S)
                     Text(addHint(s), color = CarColors.Muted, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         } else {
-            LazyVerticalGrid(GridCells.Adaptive(220.dp), Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+            LazyVerticalGrid(
+                GridCells.Adaptive(CarDimens.ProfileTileWidth), Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(Space.L), horizontalArrangement = Arrangement.spacedBy(Space.L),
+            ) {
                 items(s.tiles, key = { it.driver.userId }) { t ->
                     ProfileTile(t, onClick = {
                         when {
@@ -102,8 +112,8 @@ fun DriverSelectScreen(
         // Footer: car name; long-press 5 s → debug settings (spec §6.1).
         Text(
             carName ?: stringResource(R.string.car_not_registered),
-            style = MaterialTheme.typography.bodyMedium, color = CarColors.Muted,
-            modifier = Modifier.padding(top = 12.dp).pointerInput(Unit) {
+            style = MaterialTheme.typography.bodySmall, color = CarColors.Muted,
+            modifier = Modifier.padding(top = Space.M).pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown()
                     val released = withTimeoutOrNull(5_000) { waitForUpOrCancellation() }
@@ -122,27 +132,31 @@ private fun addHint(s: LockUiState): String = when {
     else -> ""
 }
 
+private val TileAvatar = 112.dp
+
+/** Profile and "Add driver" tiles share one fixed size so the grid stays even. */
 @Composable
 private fun ProfileTile(t: DriverTile, onClick: () -> Unit, onSignInAgain: () -> Unit) {
-    Column(
-        Modifier.clip(RoundedCornerShape(24.dp)).background(CarColors.Surface).clickable(onClick = onClick).padding(20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box {
-            Avatar(t.driver.initials, t.driver.avatarColor, 120.dp, Modifier.alpha(if (t.lockedOutMs != null || t.pinDisabled) 0.4f else 1f))
-            if (t.driver.hasPendingUploads) {
-                Box(Modifier.align(Alignment.TopEnd).size(32.dp).clip(CircleShape).background(CarColors.Amber), contentAlignment = Alignment.Center) {
-                    Text("⇡", fontSize = 20.sp)
+    SectionCard(Modifier.fillMaxWidth().height(CarDimens.ProfileTileHeight), onClick = onClick) {
+        Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Box {
+                Avatar(t.driver.initials, t.driver.avatarColor, TileAvatar, Modifier.alpha(if (t.lockedOutMs != null || t.pinDisabled) 0.4f else 1f))
+                if (t.driver.hasPendingUploads) {
+                    Box(
+                        Modifier.align(Alignment.TopEnd).size(36.dp).clip(CircleShape).background(CarColors.Amber)
+                            .border(3.dp, CarColors.Surface, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("⇡", fontSize = 20.sp, color = CarColors.BackgroundDeep) }
                 }
             }
-        }
-        VSpace(12.dp)
-        Text(t.driver.displayName, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
-        when {
-            t.pinDisabled -> Text(stringResource(R.string.sign_in_with_password), color = CarColors.Amber, style = MaterialTheme.typography.bodySmall)
-            t.lockedOutMs != null -> Text(stringResource(R.string.try_again_in, mmss(t.lockedOutMs)), color = CarColors.Amber, style = MaterialTheme.typography.bodySmall)
-            t.driver.needsReauth -> TextButton(onClick = onSignInAgain) {
-                Text(stringResource(R.string.sign_in_again_to_upload), color = CarColors.Amber, style = MaterialTheme.typography.bodySmall)
+            VSpace(Space.M)
+            Text(t.driver.displayName, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            when {
+                t.pinDisabled -> Text(stringResource(R.string.sign_in_with_password), color = CarColors.Amber, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                t.lockedOutMs != null -> Text(stringResource(R.string.try_again_in, mmss(t.lockedOutMs)), color = CarColors.Amber, style = MaterialTheme.typography.bodySmall)
+                t.driver.needsReauth -> TextButton(onClick = onSignInAgain) {
+                    Text(stringResource(R.string.sign_in_again_to_upload), color = CarColors.Amber, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                }
             }
         }
     }
@@ -151,14 +165,17 @@ private fun ProfileTile(t: DriverTile, onClick: () -> Unit, onSignInAgain: () ->
 @Composable
 private fun AddTile(enabled: Boolean, hint: String?, onClick: () -> Unit) {
     Column(
-        Modifier.clip(RoundedCornerShape(24.dp)).border(2.dp, CarColors.SurfaceHigh, RoundedCornerShape(24.dp))
-            .clickable(enabled = enabled, onClick = onClick).padding(20.dp).alpha(if (enabled) 1f else 0.5f),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        Modifier.fillMaxWidth().height(CarDimens.ProfileTileHeight).clip(CarShapes.Card)
+            .border(2.dp, CarColors.Outline, CarShapes.Card)
+            .clickable(enabled = enabled, onClick = onClick).padding(CarDimens.CardPadding).alpha(if (enabled) 1f else 0.5f),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.size(120.dp).clip(CircleShape).background(CarColors.SurfaceHigh), contentAlignment = Alignment.Center) {
-            Text("+", fontSize = 64.sp)
-        }
-        VSpace(12.dp)
+        Box(
+            Modifier.size(TileAvatar).clip(CircleShape).background(CarColors.SurfaceHigh)
+                .border(2.dp, CarColors.Orange, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Text("+", fontSize = 64.sp, color = CarColors.Orange) }
+        VSpace(Space.M)
         Text(stringResource(R.string.add_driver), style = MaterialTheme.typography.titleMedium)
         if (hint != null) Text(hint, color = CarColors.Muted, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
     }
@@ -177,30 +194,31 @@ fun PinEntryScreen(userId: String, onCancel: () -> Unit, onForgotPin: (String) -
             for (x in listOf(30f, -30f, 20f, -20f, 10f, 0f)) shake.animateTo(x, tween(50))
         }
     }
-    Row(Modifier.fillMaxSize().background(CarColors.Background).padding(32.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxSize().background(CarColors.backgroundBrush).padding(CarDimens.ScreenPadding),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.XXL),
+    ) {
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
             s.driver?.let {
                 Avatar(it.initials, it.avatarColor, 140.dp)
-                VSpace(16.dp)
+                VSpace(Space.M)
                 Text(it.displayName, style = MaterialTheme.typography.headlineMedium)
             }
-            VSpace(32.dp)
+            VSpace(Space.XL)
             PinDots(s.pinLength, s.entered.length, Modifier.offset { IntOffset(shake.value.toInt(), 0) })
-            VSpace(24.dp)
+            VSpace(Space.L)
             val msg = when {
                 s.pinDisabled -> stringResource(R.string.pin_disabled)
                 s.lockedOutMs != null -> stringResource(R.string.locked_try_again_in, mmss(s.lockedOutMs!!))
                 s.attemptsLeft != null -> stringResource(R.string.wrong_pin_attempts_left, s.attemptsLeft!!)
                 else -> stringResource(R.string.enter_pin)
             }
-            Text(msg, style = MaterialTheme.typography.titleMedium, color = if (s.attemptsLeft != null || s.lockedOutMs != null || s.pinDisabled) CarColors.Amber else CarColors.OnDark, textAlign = TextAlign.Center)
-            VSpace(24.dp)
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(msg, style = MaterialTheme.typography.titleMedium, color = if (s.attemptsLeft != null || s.lockedOutMs != null || s.pinDisabled) CarColors.Amber else CarColors.Muted, textAlign = TextAlign.Center)
+            VSpace(Space.XL)
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.M)) {
                 SecondaryButton(stringResource(R.string.cancel), onCancel)
                 if (s.pinDisabled) PrimaryButton(stringResource(R.string.sign_in_with_password), { s.driver?.let { onForgotPin(it.username) } })
-                else TextButton(onClick = { s.driver?.let { onForgotPin(it.username) } }, modifier = Modifier.size(width = 240.dp, height = 76.dp)) {
-                    Text(stringResource(R.string.forgot_pin), style = MaterialTheme.typography.labelLarge)
-                }
+                else GhostButton(stringResource(R.string.forgot_pin), { s.driver?.let { onForgotPin(it.username) } })
             }
         }
         Keypad(onDigit = vm::digit, onBackspace = vm::backspace, enabled = !s.busy && s.lockedOutMs == null && !s.pinDisabled)

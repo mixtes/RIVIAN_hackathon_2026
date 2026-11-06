@@ -1,6 +1,6 @@
 # Frontend Specification: Driving Score Car App (Android Automotive)
 
-> Status: Draft v1.0 (2026-11-06) · Scope: Hackathon MVP, built to be close to production quality
+> Status: Draft v1.1 (2026-11-06; latched alerts + `alert.dismiss`) · Scope: Hackathon MVP, built to be close to production quality
 > Companion documents: [`../backend/backend_specification.md`](../backend/backend_specification.md) (FastAPI + PostgreSQL) · [`../simulated_game_engine/simulated_game_engine_specification.md`](../simulated_game_engine/simulated_game_engine_specification.md) (engine bridge + simulator)
 
 ---
@@ -162,10 +162,10 @@ General layout: **landscape**, dark theme by default. A persistent **top status 
 
 ### 6.3 Drive screen: `SESSION_ACTIVE`
 Minimal and glanceable, since this is the screen visible while driving:
-- A large "**Tracking, \<Display name\>**", elapsed time, and a pulsing status dot.
-- Engine status chip: `Engine ✓`, or `Reconnecting…` in amber.
-- **No live score.** The engine only scores at the end of the drive.
-- While **parked**, it also shows the "End drive" button and access to the navigation rail.
+- A small "**TRACKING**" label with a pulsing orange dot, and the driver's **display name** in large type below it, over a calm animated backdrop (teal glow, slow concentric rings).
+- **No elapsed-time counter** and **no live score.** The engine only scores at the end of the drive.
+- A `Reconnecting…` chip in amber appears only while the engine is not connected (the status bar always shows the engine dot).
+- While **parked**, it also shows the "End drive" button and access to the navigation rail. While moving, the button slot shows "Drive safely".
 - An alerts overlay is drawn on top (§6.9).
 
 ### 6.4 Drive Result: `RESULT`
@@ -189,7 +189,8 @@ Minimal and glanceable, since this is the screen visible while driving:
 | 🍔 Eating / drinking | 0 | – | – |
 | 🚬 Smoking | 0 | – | – |
 
-- All 8 known types are always listed, with zero rows dimmed. Unknown types reported by the engine are appended with their raw name, title-cased.
+- All 8 known types are always listed, with zero rows in muted text. Unknown types reported by the engine are appended with their raw name, title-cased.
+- **Severity color:** the Count cell is a pill colored by the mistake's rate per hour of driving (`count × 3600 / duration_s`): **green** for 0, **amber** for fewer than 2 per hour, **red** for 2 or more per hour (or any mistake when the drive has no duration). The pill also shows the rate, e.g. `1 · 6.0/h`, so the information isn't conveyed by color alone (§14). The rule is `MistakeSeverity` in `core/model`.
 - Durations are formatted as `s` below 60 s and `m:ss` above.
 - **Timeline** (if `events` were provided): a horizontal bar across the drive's duration, with colored marks per event type. Tap a mark to see its type, time, and duration.
 
@@ -218,6 +219,7 @@ See §9 for the behavior. Visuals:
 - **VISUAL / AUDIO**: a full-width **amber banner** at the top (≥ 120 dp tall, icon and text ≥ 32 sp). AUDIO adds a chime and TTS.
 - **HAPTIC**: the same banner in **red**, pulsing, with a double chime and TTS.
 - **CRITICAL**: a **full-screen red overlay** (semi-transparent, pulsing red border, huge icon and text), with an alarm tone and TTS. Stays until `alert.clear` arrives or the maximum display time passes.
+- **Latched** (`requires_ack: true`, e.g. drowsiness `EYES_CLOSED`): the visual of its level (in practice the CRITICAL overlay) **plus a large "Dismiss" button** (design-system `PrimaryButton`, 112 dp tall, ≥ 420 dp wide, dark fill for contrast on red). No maximum display time: it stays until the driver presses Dismiss, `alert.clear` arrives, or the session ends.
 
 ### 6.10 Add Driver / Create Account (from Lock screen, online only, parked only)
 The first step is a choice: **"I have an account"** or **"Create account"**.
@@ -258,7 +260,7 @@ Other rules:
 ### 7.1 Principles
 - While moving, the app shows **only** the Drive screen, the Result screen (read-only, no navigation), and alerts. No text input, no scrolling lists.
 - Large text (body ≥ 24 sp, titles ≥ 32 sp, numbers ≥ 48 sp), touch targets ≥ **76 dp**, high contrast (WCAG AA minimum), dark theme for night. Light theme follows the system day/night mode (**MVP: dark theme only**; the light variant is future work).
-- Alerts never require a tap to dismiss.
+- Alerts never require a tap to dismiss, **except latched alerts** (`requires_ack`, §9.1), which stay until the driver presses their Dismiss button. That button is always available, also while moving.
 
 ### 7.2 Driving state
 `CarUxRestrictionsManager` is observed and exposed as `StateFlow<DrivingState>` (`PARKED` / `MOVING`). The rule is `isRequiresDistractionOptimization()` → `MOVING`.
@@ -273,7 +275,7 @@ Other rules:
 | Add driver, Change PIN, Remove driver | ✔ | ✖ "Available when parked" |
 | History, Stats, Leaderboard, Debug settings | ✔ | ✖ (navigation rail hidden; an open screen falls back to the Drive or Result screen) |
 | End drive button | ✔ | ✖ |
-| Alerts | ✔ | ✔ |
+| Alerts (incl. the Dismiss button of a latched alert; the overlay is drawn above every screen and is never gated) | ✔ | ✔ |
 
 ### 7.4 Vehicle signals (optional, behind a feature flag)
 - If permitted on the target head unit, the app reads `GEAR_SELECTION` and ignition state via `CarPropertyManager`:
@@ -286,7 +288,7 @@ Other rules:
 ## 8. Engine Integration Contract
 
 ### 8.0 Where the engines come from
-- The real engines live in **`RivianHackatonEngine/`** (owned by the engine team). It is an **in-process Python library**: `SafetySystem` (in `main.py`) combines `AlertEngine` (real-time alerts with escalation) and `GameEngine` (end-of-drive score). Its API is `start_drive()`, `on_event(action, is_active, ts)`, `tick(ts)`, `end_drive(ts)`. It has **no network layer**.
+- The real engines live in **`RivianHackatonEngine/`** (owned by the engine team). It is an **in-process Python library**: `SafetySystem` (in `main.py`) combines `AlertEngine` (real-time alerts with escalation, including latched alerts) and `GameEngine` (end-of-drive score). Its API is `start_drive()`, `on_event(action, is_active, ts) -> list of Alert / AlertClear`, `tick_all(ts)` (escalations of all active actions), `dismiss(alert_id, ts)` (ends a latched alert), `end_drive(ts)`. Nothing is delivered by callback: every call returns its updates. Action keys are **UPPER_CASE** (`PHONE_CALL`); inputs are normalized (`"phone_call"` works too). It has **no network layer**. The engine-side contract is `RivianHackatonEngine/AlertEngine/CAR_FRONTEND_INTERFACE.md`.
 - **`simulated_game_engine/`** (§15.3) is the **bridge**. It imports `SafetySystem` **unchanged**, feeds it driver-action events (simulated for now, from real detection later), and exposes it to the car app over the WebSocket protocol below.
 - One process runs both engines, so the car app uses **one WebSocket connection** that carries both alerts and drive results.
 
@@ -337,8 +339,9 @@ Other rules:
 | App → Engine | `session.end` | `{ "session_id": "uuid", "reason": "MANUAL" \| "DRIVER_SWITCH" \| "IGNITION_OFF" \| "APP_SHUTDOWN" }` | The engine responds with `drive.result` |
 | Engine → App | `drive.result` | see §8.5 | May arrive **spontaneously** (the engine detected the drive end) or after `session.end` |
 | App → Engine | `drive.result.ack` | `{ "session_id": "uuid" }` | Sent **after** the result is persisted in Room |
-| Engine → App | `alert` | `{ "alert_id": "uuid", "session_id": "uuid", "type": "EYES_OFF_ROAD", "level": "AUDIO", "message": "Eyes on the road.", "duration_so_far_s": 1.2, "started_at": "ts", "ttl_s": 10 }` | One `alert_id` per **occurrence** of an action. Each escalation of the same occurrence is re-sent with the **same `alert_id`** and a higher `level`. |
-| Engine → App | `alert.clear` | `{ "alert_id": "uuid" }` | The action ended (`on_event(action, is_active=False)`) or the session ended |
+| Engine → App | `alert` | `{ "alert_id": "uuid", "session_id": "uuid", "type": "EYES_OFF_ROAD", "level": "AUDIO", "message": "Eyes on the road.", "duration_so_far_s": 1.2, "started_at": "ts", "ttl_s": 10, "requires_ack": false }` | One `alert_id` per **occurrence** of an action. Each escalation of the same occurrence is re-sent with the **same `alert_id`** and a higher `level`. While the action stays active, the engine also re-sends the current alert every 5 s at the same level (keep-alive), which restarts `ttl_s` without a new sound. `requires_ack` (optional, absent/null = `false`): **latched** alert (e.g. drowsiness `EYES_CLOSED`), shown until the driver dismisses it (§9.1); `ttl_s` is ignored for it. |
+| App → Engine | `alert.dismiss` | `{ "alert_id": "uuid", "session_id": "uuid" \| null }` | The driver pressed **Dismiss** on a latched alert. **Fire-and-forget** (no ack); if the connection is down it is dropped, not queued. The app removes the alert locally at once (optimistic). The engine answers with `alert.clear` for that id (a no-op in the app by then). If the action is still active (eyes still closed), the engine immediately starts a **new occurrence**: a new `alert` with a **new** `alert_id`, again `requires_ack: true`. |
+| Engine → App | `alert.clear` | `{ "alert_id": "uuid" }` | The action ended (`on_event(action, is_active=False)`, non-latched only), a latched alert was dismissed, or the session ended. The reason is not on the wire. |
 | Engine → App | `error` | `{ "code": "NO_ACTIVE_SESSION", "message": "…", "ref_msg_id": "uuid" }` | Logged. Shown in the debug view. |
 
 **Alert levels** come straight from the engine's `AlertLevel` enum: `VISUAL` (1) < `AUDIO` (2) < `HAPTIC` (3) < `CRITICAL` (4). `NONE` is never sent. The app treats an unknown level as `AUDIO`.
@@ -348,7 +351,7 @@ Other rules:
 2. **Session mismatch:** if the engine's `hello.active_session_id` differs from the app's, the app sends `session.end` (reason `DRIVER_SWITCH`) for the engine's session, then `session.start` for its own.
 3. **At-least-once results:** the engine keeps each `drive.result` until it receives `drive.result.ack`. On every reconnect it re-sends any unacked results. The app de-duplicates by `session_id` (Room primary key). If persisting fails (e.g. a database error), the app does **not** ack, so the engine re-delivers.
 4. A result whose `session_id` matches no session the app knows is still persisted, attributed via its `user_id` (included in the payload). If that user has no profile on this car, it is dropped with an error log.
-5. Alerts are **fire-and-forget**. If the connection is lost, alerts that were showing are auto-cleared after their `ttl_s` (default 10 s).
+5. Alerts are **fire-and-forget**. If the connection is lost, alerts that were showing are auto-cleared after their `ttl_s` (default 10 s). **Exception: latched alerts** (`requires_ack`) are never auto-cleared, neither by `ttl_s` nor on connection loss. They stay until the driver presses Dismiss, `alert.clear` arrives for them, or the session ends. A Dismiss while disconnected still removes the alert locally (the `alert.dismiss` is dropped); if the engine still has it latched, it is re-sent after the reconnect (keep-alive) as long as the app hasn't seen that `alert_id` dismissed, otherwise the engine rings again with a new occurrence.
 
 ### 8.5 `drive.result` payload (canonical)
 
@@ -380,12 +383,12 @@ This is identical to the backend upload body (backend spec §8.6), minus `id`, p
 |---|---|
 | `score` | `score` (rounded to 2 decimals) |
 | `started_at` / `ended_at` | Wall-clock times the bridge recorded at `session.start` / end |
-| `mistakes[].type` | Action key, **UPPER_CASED** (`phone_call` → `PHONE_CALL`) |
+| `mistakes[].type` | Action key (already **UPPER_CASE** in the engine, e.g. `PHONE_CALL`) |
 | `mistakes[].count` / `total_duration_s` / `max_duration_s` | `ActionSummary.count` / `total_duration` / `longest_duration` |
 | `events[]` | `occurrences` that were **penalized** (above the grace period, consistent with `count`), times converted to wall clock |
 | `extra.penalties` | `ActionSummary.penalty` per type |
 
-**Mistake types.** The canonical names (shared with the backend) are `EYES_OFF_ROAD`, `PHONE_USE`, `EYES_CLOSED`, `YAWN`, `HANDS_OFF_WHEEL`, `PHONE_CALL`, `EATING_DRINKING`, `SMOKING`. The engine's action keys are their **lower-case** forms (`eyes_off_road`, `phone_call`, …). Today the engine configures only `phone_call` and `eyes_off_road`; the rest arrive as the engine team adds them. The app **upper-cases every incoming type** and accepts any `^[A-Z][A-Z0-9_]{1,39}$` value. Before storing, it normalizes the raw payload it will later upload: types are upper-cased, entries whose type doesn't match the pattern are dropped (logged), and duplicate mistake types are merged (counts and total durations summed, max of max). Unknown fields such as `extra` are kept.
+**Mistake types.** The canonical names (shared with the backend) are `EYES_OFF_ROAD`, `PHONE_USE`, `EYES_CLOSED`, `YAWN`, `HANDS_OFF_WHEEL`, `PHONE_CALL`, `EATING_DRINKING`, `SMOKING`. The engine uses exactly these 8 **UPPER_CASE** keys as its action keys (it normalizes its inputs, so `"phone_call"` also works there) and configures all of them; `hello.supported_actions` lists the ones real detection produces. Drowsiness is reported as `EYES_CLOSED` (latched). The app still **upper-cases every incoming type** defensively and accepts any `^[A-Z][A-Z0-9_]{1,39}$` value. Before storing, it normalizes the raw payload it will later upload: types are upper-cased, entries whose type doesn't match the pattern are dropped (logged), and duplicate mistake types are merged (counts and total durations summed, max of max). Unknown fields such as `extra` are kept.
 
 Validation in the app, before persisting (invalid → log, then ack anyway so the engine doesn't loop, and show "Result invalid"): `0 ≤ score ≤ 100`, `ended_at ≥ started_at`, counts ≥ 0.
 
@@ -419,19 +422,23 @@ The severity is **never** decided by the app. It always uses the engine's `level
 | `AUDIO` | Amber top banner | short chime (`res/raw/chime_warning`) | yes, once | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
 | `HAPTIC` | **Red** top banner, pulsing | double chime | yes, once | until `alert.clear`, max `ttl_s` (default 10 s) |
 | `CRITICAL` | Full-screen red pulsing overlay | repeating alarm tone (`res/raw/alarm_critical`) every 2 s | yes, repeated every 6 s | until `alert.clear`, max `ttl_s` (default 15 s) |
+| **Latched** (`requires_ack`, any level; in practice `CRITICAL`) | The visual of its level **plus a large Dismiss button** (overlay, ≥ 80 dp; 112 dp in the full-screen overlay) | as `CRITICAL`: alarm on arrival, then every 2 s; **never muted by the 10 s cooldown** | yes, repeated every 6 s | **no `ttl_s`**: until Dismiss, `alert.clear`, or session end |
 
+- **Dismiss (latched alerts):** optimistic. On tap the app removes the alert at once (stops the alarm and TTS, cancels its notification) and sends `alert.dismiss` (§8.3). A later `alert.clear` for that id is a no-op, and late keep-alives for that id are ignored. A new `alert` with a new `alert_id` (eyes still closed) is a new occurrence and is shown and sounded normally.
 - **`HAPTIC` vibration:** the app has no access to seat or steering-wheel vibration on AAOS. For the MVP, `HAPTIC` is shown as the escalated red banner + sound. Real haptics (via a vehicle API, if the OEM exposes one) are future work.
 
 ### 9.2 Queueing and deduplication
 - Only **one** visual alert is shown at a time. Priority is `CRITICAL` > `HAPTIC` > `AUDIO` > `VISUAL`, and a higher level **preempts** a lower one. The preempted alert resumes if it is still active.
+- A **latched** alert outranks everything: while one is present it is the one shown (even over a newer non-latched alert of the same level). Lower alerts keep queuing and resume after the Dismiss.
 - The same `alert_id` → update in place. This is how the engine's **escalation** arrives (for example `eyes_off_road`: `AUDIO` at 1 s → `HAPTIC` at 2.5 s → `CRITICAL` at 4 s). On an escalation, the new level's sound and TTS play.
-- The same `type` within a **10 s cooldown** after its clear → the visual is shown, but the chime and TTS are not replayed at the same level (to avoid nagging). This is on top of any cooldown the engine applies.
+- The same `type` within a **10 s cooldown** after its clear → the visual is shown, but the chime and TTS are not replayed at the same level (to avoid nagging). This is on top of any cooldown the engine applies. **Latched alerts are never muted** by this cooldown.
 - Audio uses `AudioFocusRequest(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)` with `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, so media is ducked rather than stopped.
 - TTS language follows the system locale. TTS initialization failure → sound only.
 
 ### 9.3 When the app is not in the foreground
 - The foreground service posts the alert as a **heads-up notification** (an `IMPORTANCE_HIGH` channel "Driver alerts", category `CATEGORY_NAVIGATION` or `CATEGORY_ALARM`), and plays the sound and TTS from the service. A CRITICAL alert also tries to bring the app's overlay to the front if the platform allows it.
-- Notifications are cancelled on `alert.clear`.
+- A **latched** alert's notification is **ongoing** (not swipe-dismissable, where the platform honours it) and has a **"Dismiss" action**. The action is a `PendingIntent` to `EngineConnectionService` (`ACTION_DISMISS_ALERT` + `alert_id`) and does exactly what the overlay button does.
+- Notifications are cancelled on `alert.clear` and on Dismiss.
 
 ---
 
@@ -628,7 +635,7 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 
 **Key components**
 - `EngineClient`: a generic WebSocket client: connect, reconnect, send, `incoming: SharedFlow<EngineMessage>`, `status: StateFlow<ConnectionStatus>`.
-- `EngineGateway`: a typed facade over `EngineClient`: `startSession()`, `endSession()`, `alerts: Flow<AlertEvent>`, `results: Flow<DriveResult>`.
+- `EngineGateway`: a typed facade over `EngineClient`: `startSession()`, `endSession()`, `dismissAlert(alertId, sessionId)`, `alerts: Flow<AlertEvent>`, `results: Flow<DriveResult>`.
 - `SessionManager`: the state machine from §5. It coordinates the engines, persistence, and navigation events.
 - `AlertPresenter`: the queue, priority, and cooldown from §9. It drives the Compose overlay state, `SoundPool`, `TextToSpeech`, and notifications.
 - `DrivingStateMonitor`: exposes `PARKED`/`MOVING`. A Compose `LocalDrivingState` gates UI.
@@ -637,7 +644,8 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 
 ## 14. UX and Design Guidelines
 
-- **Theme:** dark by default (background `#0E1116`, surface `#1A1F27`). Accent is a brand-neutral blue. Score colors: green `#2BB673`, amber `#F5A524`, red `#E5484D`. Alert colors are reserved for alerts.
+- **Theme:** dark by default, in deep blue-teal tones with a green undertone (background `#0A1C22` fading to `#06141A`, surface `#10272E`, raised surface `#17343C`, outline `#264A52`, teal `#3A9FAE`, soft teal `#8FD3D1` for secondary text and icons). The single action accent is a warm Claude-like orange (`#E08A67` for text and dots, `#C96442` as the button fill with white text). Score colors: green `#45C08A`, amber `#F2B33D`, red `#E5534B`. Alert colors are reserved for alerts and scores. Avoid translucent orange over teal (it turns brown): selected states use solid orange or a teal surface. Tokens live in `core/designsystem/Theme.kt` (`CarColors`).
+- **Layout tokens:** one spacing scale (`Space`: 8 / 12 / 16 / 24 / 32 / 48 dp), screen padding 32 dp, card padding 24 dp, card radius 24 dp, control radius 20 dp. All buttons are 80 dp tall (min. width 220 dp). Every screen uses `CarScreen` / `ScreenHeader` so titles start at the same place, and every card is a `SectionCard`. Profile tiles have one fixed size.
 - **Typography:** a large-scale type ramp (body 24 sp, title 32 sp, display 64–96 sp for the score).
 - **Motion:** subtle. Only the CRITICAL overlay pulses (1 Hz). Respects the system "remove animations" setting.
 - **Glanceability:** a driver should be able to read any screen shown while driving in < 2 s.
@@ -652,11 +660,12 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 ### 15.1 Debug settings screen (debug builds, or a 5 s long-press on the car name)
 - Edit the engine URL and the API base URL. Toggle **FakeEngine (in-app)**.
 - Live connection log (the last 200 engine messages, in and out).
-- Buttons: send a test alert (each level), simulate `drive.result`, force sync, re-register the car, wipe all local data.
+- Buttons: send a test alert (each level), send a **test latched alert** (`EYES_CLOSED` CRITICAL with `requires_ack`; stays until Dismiss), simulate `drive.result`, force sync, re-register the car, wipe all local data. Test alerts use `debug-` ids; their Dismiss is not sent to the engine.
 - Toggle the driving-state override (`PARKED`/`MOVING`) for testing on the emulator.
 
 ### 15.2 FakeEngine (in-app)
 - An implementation of the `EngineGateway` facade that needs no network: it emits random alerts every 20–60 s during a session and produces a randomized `drive.result` on `session.end`.
+- About 15 % of those alerts are a **latched** `EYES_CLOSED` CRITICAL alert (`requires_ack`, message "Wake up! Pull over and rest."). The fake engine then waits for `alert.dismiss`, answers it with `alert.clear`, and counts the occurrence (until the dismiss) as a mistake.
 
 ### 15.3 Simulated engine / engine bridge (`simulated_game_engine/`)
 The bridge that wraps the real `SafetySystem` and serves the §8 protocol, plus the driver-event simulator (CLI, auto mode, `scenario demo`), is specified in its own document: [`../simulated_game_engine/simulated_game_engine_specification.md`](../simulated_game_engine/simulated_game_engine_specification.md). §8 here remains the source of truth for the wire protocol.
@@ -667,7 +676,7 @@ The bridge that wraps the real `SafetySystem` and serves the §8 protocol, plus 
 
 | Level | What |
 |---|---|
-| Unit | PIN hashing and verification, the lockout policy (including clock tampering), `SessionManager` transitions (all edges in §5), `AlertPresenter` priority, preemption, and cooldown, protocol (de)serialization, and the mapping of results into entities and DTOs. |
+| Unit | PIN hashing and verification, the lockout policy (including clock tampering), `SessionManager` transitions (all edges in §5), `AlertQueue` / `AlertPresenter` priority, preemption, cooldown, and latched alerts (no ttl, Dismiss, `alert.dismiss`), protocol (de)serialization, and the mapping of results into entities and DTOs. |
 | Integration | `EngineClient` against `MockWebServer` WebSocket: reconnect, resume, re-delivery, and de-duplication. `SyncDrivesWorker` with `MockWebServer` (every response class in §11.3) using `WorkManagerTestInitBuilder`. Room DAO tests. |
 | UI (Compose) | Driver select states, PIN entry (auto-submit, lockout UI), Result and Details rendering for 0 or many mistakes and unknown types, gating of screens by driving state. |
 | End-to-end (manual / scripted) | AAOS emulator + `simulated_game_engine/` + the backend in Docker: add driver → PIN → drive with alerts → result → sync → appears in stats and leaderboard. Then repeat with airplane mode (queued sync). |

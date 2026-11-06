@@ -23,6 +23,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -90,6 +91,15 @@ class EngineClientTest {
         val ev = withTimeout(5_000) { alert.await() } as AlertEvent.Show
         assertEquals("EYES_OFF_ROAD", ev.alert.type)
         assertEquals(AlertLevel.HAPTIC, ev.alert.level)
+        assertFalse(ev.alert.requiresAck) // requires_ack absent → not latched
+
+        val latched = async(Dispatchers.Default) { gw.alerts.first() }
+        engine.send("alert", """{"alert_id":"L1","session_id":"sess-1","type":"EYES_CLOSED","level":"CRITICAL","message":"Wake up! Pull over and rest.","requires_ack":true}""")
+        assertTrue((withTimeout(5_000) { latched.await() } as AlertEvent.Show).alert.requiresAck)
+        gw.dismissAlert("L1", "sess-1")
+        val dismiss = engine.nextOfType("alert.dismiss")["payload"] as Map<*, *>
+        assertEquals("\"L1\"", dismiss["alert_id"].toString())
+        assertEquals("\"sess-1\"", dismiss["session_id"].toString())
 
         val result = async(Dispatchers.Default) { gw.results.first() }
         engine.send("drive.result", """{"session_id":"sess-1","user_id":"u1","started_at":"2026-11-06T08:00:00Z","ended_at":"2026-11-06T08:30:00Z","score":91.0}""")

@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -22,8 +21,10 @@ from .mapping import map_drive_report, to_wall
 
 log = logging.getLogger("simulated_game_engine.core")
 
-TickMode = Literal["per-action", "engine"]
-
+# Re-send every alert that is still showing this often. The engine only reports escalations,
+# and the app drops a (non-latched) alert `ttl_s` (8-15 s) after its last update, so without
+# this an ongoing action's warning would disappear while the driver is still distracted.
+ALERT_REFRESH_S = 5.0
 
 
 MAX_ENGINE_VERSION_LEN = 40  # backend drives.engine_version is VARCHAR(40)
@@ -47,8 +48,12 @@ class Session:
 
 @dataclass
 class _AlertState:
+    """An alert the app is (or should be) showing, keyed by the engine's `alert_id`."""
     alert_id: str
-    last: p.AlertOut | None = None
+    action: str
+    mono_start: float               # occurrence start (engine time)
+    last: p.AlertOut
+    sent_at: float                  # monotonic time `last` was last sent
 
 
 @dataclass
@@ -57,23 +62,31 @@ class _Status:
     active_actions: list[str]
     configured_actions: list[str]
     pending_results: list[str]
-    alert_ids: dict[str, str] = field(default_factory=dict)
+    alerts: dict[str, str] = field(default_factory=dict)  # alert_id -> "ACTION LEVEL [latched]"
 
 
 class BridgeCore:
-    """Wraps one `SafetySystem`. Only one session at a time (one car)."""
+    """Wraps one `SafetySystem`. Only one session at a time (one car).
+
+    Engine contract: RivianHackatonEngine/AlertEngine/CAR_FRONTEND_INTERFACE.md. Every engine
+    call returns a list of `Alert` / `AlertClear` updates; the engine owns the `alert_id`s.
+    """
 
     def __init__(self, system: Any, clock: Clock, *, engine_version: str,
-                 tick_mode: TickMode = "per-action", ended_history: int = 500) -> None:
+                 detected_actions: list[str] | tuple[str, ...] | None = None,
+                 ended_history: int = 500, alert_refresh_s: float = ALERT_REFRESH_S) -> None:
         self.system = system
         self.clock = clock
         # The backend column is VARCHAR(40); a longer value would make every upload fail with 422.
         self.engine_version = engine_version[:MAX_ENGINE_VERSION_LEN]
-        self.tick_mode: TickMode = tick_mode
+        # What real detection emits (the engine's DETECTED_ACTIONS); reported in hello.
+        self.detected_actions = (sorted(a.strip().upper() for a in detected_actions)
+                                 if detected_actions else None)
+        self.alert_refresh_s = alert_refresh_s
         self.session: Session | None = None
         # action (lower-case) -> monotonic start, for actions the simulator holds active
         self.active_actions: dict[str, float] = {}
-        # action (lower-case) -> alert id of the current occurrence
+        # engine alert_id -> what the app is showing for it (until the engine clears it)
         self._alerts: dict[str, _AlertState] = {}
         # session_id -> drive.result envelope, kept until drive.result.ack (§8.4 rule 3)
         self.pending_results: OrderedDict[str, p.Message] = OrderedDict()
@@ -89,7 +102,8 @@ class BridgeCore:
 
     @property
     def supported_actions(self) -> list[str]:
-        return [a.upper() for a in self.configured_actions]
+        """hello.supported_actions: the detected subset if the engine declares one."""
+        return self.detected_actions or [a.upper() for a in self.configured_actions]
 
     def is_configured(self, action: str) -> bool:
         return action.strip().lower() in self.configured_actions
@@ -100,7 +114,8 @@ class BridgeCore:
             active_actions=sorted(self.active_actions),
             configured_actions=self.configured_actions,
             pending_results=list(self.pending_results),
-            alert_ids={a: s.alert_id for a, s in self._alerts.items()},
+            alerts={i: f"{s.action} {s.last.level}" + (" latched" if s.last.requires_ack else "")
+                    for i, s in self._alerts.items()},
         )
 
     # ---- inbound messages ----------------------------------------------------------------
@@ -129,6 +144,7 @@ class BridgeCore:
             p.SESSION_START: (p.SessionStartIn, self._on_session_start),
             p.SESSION_END: (p.SessionEndIn, self._on_session_end),
             p.DRIVE_RESULT_ACK: (p.DriveResultAckIn, self._on_result_ack),
+            p.ALERT_DISMISS: (p.AlertDismissIn, self._on_alert_dismiss),
         }
         entry = handlers.get(env.type)
         if entry is None:
@@ -162,7 +178,7 @@ class BridgeCore:
             # §8.4 rule 1: resumption. Continue the drive; re-send alerts still showing.
             log.info("session %s resumed", sid[:8])
             out = [self._env(p.SESSION_ACK, p.SessionAckOut(session_id=sid))]
-            out.extend(self._env(p.ALERT, s.last) for s in self._alerts.values() if s.last)
+            out.extend(self._env(p.ALERT, s.last) for s in self._alerts.values())
             return out
         if sid in self.pending_results or sid in self._ended:
             # Never restart a finished drive under the same id (it is the backend drive id).
@@ -201,6 +217,14 @@ class BridgeCore:
             log.info("drive.result %s acked", str(ack.session_id)[:8])
         return []
 
+    def _on_alert_dismiss(self, env: p.Envelope, msg: p.AlertDismissIn) -> list[p.Message]:
+        # Fire-and-forget from the app, which already removed the alert locally. Never error:
+        # a late dismiss (session over, alert already cleared) is normal and harmless.
+        if self.session is None or (msg.session_id and msg.session_id != self.session.session_id):
+            log.info("alert.dismiss %s ignored: not for the active session", msg.alert_id[:8])
+            return []
+        return self.dismiss(msg.alert_id)
+
     # ---- simulator inputs ------------------------------------------------------------------
 
     def set_action(self, action: str, active: bool) -> list[p.Message]:
@@ -213,29 +237,59 @@ class BridgeCore:
             self.active_actions.setdefault(action, t)
         else:
             self.active_actions.pop(action, None)
-        out: list[p.Message] = []
-        alert = self.system.on_event(action, active, t)
-        if alert is not None:
-            out.append(self._alert(alert))
-        if not active and action in self._alerts:
-            out.append(self._env(p.ALERT_CLEAR,
-                                 p.AlertClearOut(alert_id=self._alerts.pop(action).alert_id)))
-        return out
+        return self._apply(self.system.on_event(action, active, t))
 
     def tick(self) -> list[p.Message]:
         """Called every --tick-ms so alerts escalate while an action continues."""
         if self.session is None:
             return []
         t = self.clock.monotonic()
-        if self.tick_mode == "engine":
-            # AlertEngine.tick() returns only the most severe alert (engine limitation).
-            alerts = [self.system.tick(t)]
-        else:
-            # Re-report each active action as "still active" (documented engine input), so
-            # every action's escalation comes back, not just the most severe one.
-            alerts = [self.system.on_event(a, True, t)
-                      for a in self.system.alerts.active_actions()]
-        return [self._alert(a) for a in alerts if a is not None]
+        out = self._apply(self.system.tick_all(t))
+        out.extend(self._refresh_alerts(t))
+        return out
+
+    def dismiss(self, alert_id: str) -> list[p.Message]:
+        """The driver dismissed a latched alert (`alert.dismiss`, or the CLI `dismiss`).
+
+        The engine answers with `AlertClear(reason="dismissed")`, plus a new `Alert` (new id)
+        if the action is still going. Non-latched or unknown ids give nothing.
+        """
+        if self.session is None:
+            return []
+        return self._apply(self.system.dismiss(alert_id, self.clock.monotonic()))
+
+    def dismiss_all(self) -> list[p.Message]:
+        """Dismiss every latched alert (CLI stand-in for the driver's Dismiss button)."""
+        out: list[p.Message] = []
+        for alert_id in [i for i, s in self._alerts.items() if s.last.requires_ack]:
+            out.extend(self.dismiss(alert_id))
+        return out
+
+    def _apply(self, updates: list[Any] | None) -> list[p.Message]:
+        """Engine `Alert` / `AlertClear` objects -> `alert` / `alert.clear`, in order."""
+        out: list[p.Message] = []
+        for u in updates or []:
+            if hasattr(u, "reason"):                       # AlertClear
+                self._alerts.pop(u.alert_id, None)
+                log.debug("clear %s %s (%s)", u.action, u.alert_id[:8], u.reason)
+                out.append(self._env(p.ALERT_CLEAR, p.AlertClearOut(alert_id=u.alert_id)))
+            else:                                          # Alert
+                out.append(self._alert(u))
+        return out
+
+    def _refresh_alerts(self, t: float) -> list[p.Message]:
+        """Keep-alive: re-send the latest alert (same id and level, so the app plays no new
+        sound) of every alert still showing, so the app does not expire it after `ttl_s`.
+        That includes latched alerts whose action already ended (they stay until dismissed)."""
+        out: list[p.Message] = []
+        for state in self._alerts.values():
+            if t - state.sent_at < self.alert_refresh_s:
+                continue
+            state.last = state.last.model_copy(
+                update={"duration_so_far_s": round(max(0.0, t - state.mono_start), 2)})
+            state.sent_at = t
+            out.append(self._env(p.ALERT, state.last))
+        return out
 
     def end_session(self, reason: str = p.ENGINE_END_REASON) -> list[p.Message]:
         """End the drive from the bridge side (CLI `end`, scenario): spontaneous result."""
@@ -272,22 +326,23 @@ class BridgeCore:
 
     def _alert(self, alert: Any) -> p.Message:
         assert self.session is not None
-        action = alert.action.strip().lower()   # bridge keys are lower-case; engine may differ
-        state = self._alerts.get(action)
-        if state is None:
-            state = self._alerts[action] = _AlertState(alert_id=str(uuid.uuid4()))
+        mono_start = float(alert.timestamp) - float(alert.duration_so_far)
         level = alert.level.name
-        state.last = p.AlertOut(
-            alert_id=state.alert_id,
+        out = p.AlertOut(
+            alert_id=str(alert.alert_id),
             session_id=self.session.session_id,
-            type=alert.action.upper(),
+            type=alert.action.strip().upper(),
             level=level,
             message=alert.message,
             duration_so_far_s=round(float(alert.duration_so_far), 2),
-            started_at=p.iso(self.session.wall(alert.timestamp - alert.duration_so_far)),
+            started_at=p.iso(self.session.wall(mono_start)),
             ttl_s=p.DEFAULT_TTL_S.get(level, 10),
+            requires_ack=bool(getattr(alert, "requires_ack", False)),
         )
-        return self._env(p.ALERT, state.last)
+        self._alerts[out.alert_id] = _AlertState(
+            alert_id=out.alert_id, action=out.type, mono_start=mono_start, last=out,
+            sent_at=self.clock.monotonic())
+        return self._env(p.ALERT, out)
 
     def _env(self, msg_type: str, payload: BaseModel) -> p.Message:
         return p.envelope(msg_type, payload, self.clock.wall())

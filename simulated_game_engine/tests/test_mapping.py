@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 
 from simulated_game_engine.mapping import map_drive_report, to_wall
 
+from .conftest import ALL_ACTIONS
+
 
 def test_to_wall_conversion() -> None:
     wall_start = datetime(2026, 11, 6, 8, 0, 0, tzinfo=UTC)
@@ -61,5 +63,5 @@ def test_clean_drive_lists_configured_types_with_zero(engine) -> None:
     )
     assert result.score == 100.0
     assert result.events == []
-    assert {m.type for m in result.mistakes} == set(["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"])
+    assert {m.type for m in result.mistakes} == set(ALL_ACTIONS)
     assert all(m.count == 0 for m in result.mistakes)

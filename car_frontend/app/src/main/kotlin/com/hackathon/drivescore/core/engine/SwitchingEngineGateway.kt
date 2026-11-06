@@ -80,5 +80,16 @@ class SwitchingEngineGateway(
         fake.ackResult(sessionId)
     }
 
+    override fun dismissAlert(alertId: String, sessionId: String?) {
+        // Debug-injected alerts (§15.1) exist only in the app; the engine never saw them.
+        if (alertId.startsWith(DEBUG_ALERT_PREFIX)) return
+        active.dismissAlert(alertId, sessionId)
+    }
+
     override fun dropConnection() = active.dropConnection()
+
+    companion object {
+        /** Prefix for alert ids injected through [debugAlerts]; their dismiss is not sent to the engine. */
+        const val DEBUG_ALERT_PREFIX = "debug-"
+    }
 }

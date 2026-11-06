@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,7 +13,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -36,6 +36,14 @@ import com.hackathon.drivescore.core.database.AppDatabase
 import com.hackathon.drivescore.core.datastore.AppPreferences
 import com.hackathon.drivescore.core.datastore.SecureStore
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarDimens
+import com.hackathon.drivescore.core.designsystem.CarShapes
+import com.hackathon.drivescore.core.designsystem.CardTitle
+import com.hackathon.drivescore.core.designsystem.ScreenHeader
+import com.hackathon.drivescore.core.designsystem.SectionCard
+import com.hackathon.drivescore.core.designsystem.SelectChip
+import com.hackathon.drivescore.core.designsystem.Space
+import com.hackathon.drivescore.core.designsystem.carFieldColors
 import com.hackathon.drivescore.core.designsystem.PrimaryButton
 import com.hackathon.drivescore.core.designsystem.SecondaryButton
 import com.hackathon.drivescore.core.designsystem.VSpace
@@ -99,11 +107,19 @@ class DebugViewModel @Inject constructor(
     fun drop() = engine.dropConnection()
 
     fun testAlert(level: AlertLevel) = viewModelScope.launch {
-        val id = UUID.randomUUID().toString()
+        val id = SwitchingEngineGateway.DEBUG_ALERT_PREFIX + UUID.randomUUID()
         val type = if (level == AlertLevel.CRITICAL || level == AlertLevel.HAPTIC) "EYES_OFF_ROAD" else "PHONE_CALL"
         gateway.debugAlerts.emit(AlertEvent.Show(EngineAlert(id, null, type, level, "Test ${level.name} alert", 1.0, null)))
         delay(5_000)
         gateway.debugAlerts.emit(AlertEvent.Clear(id))
+    }
+
+    /** A latched EYES_CLOSED CRITICAL alert: stays until Dismiss (or the session ends), like the engine's. */
+    fun testLatchedAlert() = viewModelScope.launch {
+        val id = SwitchingEngineGateway.DEBUG_ALERT_PREFIX + UUID.randomUUID()
+        gateway.debugAlerts.emit(
+            AlertEvent.Show(EngineAlert(id, null, "EYES_CLOSED", AlertLevel.CRITICAL, "Wake up! Pull over and rest.", 0.5, null, requiresAck = true)),
+        )
     }
 
     /** Simulates a drive.result for the active session (or a fresh one for the unlocked driver). */
@@ -151,47 +167,47 @@ fun DebugScreen(onBack: () -> Unit, vm: DebugViewModel = hiltViewModel()) {
     var aUrl by remember(apiUrl) { mutableStateOf(apiUrl) }
     val fmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
-    Row(Modifier.fillMaxSize().padding(24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+    Row(Modifier.fillMaxSize().padding(CarDimens.ScreenPadding), horizontalArrangement = Arrangement.spacedBy(Space.L)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SecondaryButton("Back", onBack)
-                Text("  Debug settings", style = MaterialTheme.typography.headlineMedium)
-            }
-            VSpace(12.dp)
-            OutlinedTextField(eUrl, { eUrl = it }, label = { Text("Engine URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(aUrl, { aUrl = it }, label = { Text("API base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            VSpace(8.dp)
+            ScreenHeader("Debug settings", onBack = onBack)
+            VSpace(Space.L)
+            OutlinedTextField(eUrl, { eUrl = it }, label = { Text("Engine URL") }, singleLine = true, shape = CarShapes.Control, colors = carFieldColors(), modifier = Modifier.fillMaxWidth())
+            VSpace(Space.S)
+            OutlinedTextField(aUrl, { aUrl = it }, label = { Text("API base URL") }, singleLine = true, shape = CarShapes.Control, colors = carFieldColors(), modifier = Modifier.fillMaxWidth())
+            VSpace(Space.M)
             PrimaryButton("Save URLs", { vm.saveUrls(eUrl, aUrl) })
-            VSpace(12.dp)
-            Row(verticalAlignment = Alignment.CenterVertically) { Switch(fake, vm::setFake); Text("  FakeEngine (in-app)") }
-            Row(verticalAlignment = Alignment.CenterVertically) { Switch(signals, vm::setVehicleSignals); Text("  Vehicle signals (ignition)") }
-            VSpace(8.dp)
-            Text("Driving state override")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(override == null, { vm.setOverride(null) }, label = { Text("Auto") })
-                FilterChip(override == DrivingState.PARKED, { vm.setOverride(DrivingState.PARKED) }, label = { Text("Parked") })
-                FilterChip(override == DrivingState.MOVING, { vm.setOverride(DrivingState.MOVING) }, label = { Text("Moving") })
+            VSpace(Space.L)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.M)) { Switch(fake, vm::setFake); Text("FakeEngine (in-app)") }
+            VSpace(Space.S)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.M)) { Switch(signals, vm::setVehicleSignals); Text("Vehicle signals (ignition)") }
+            VSpace(Space.L)
+            CardTitle("Driving state override")
+            VSpace(Space.S)
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.S)) {
+                SelectChip("Auto", override == null, { vm.setOverride(null) })
+                SelectChip("Parked", override == DrivingState.PARKED, { vm.setOverride(DrivingState.PARKED) })
+                SelectChip("Moving", override == DrivingState.MOVING, { vm.setOverride(DrivingState.MOVING) })
             }
-            VSpace(12.dp)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            VSpace(Space.L)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.S), verticalArrangement = Arrangement.spacedBy(Space.S)) {
                 AlertLevel.entries.forEach { l -> SecondaryButton("Alert ${l.name}", { vm.testAlert(l) }) }
+                SecondaryButton("Alert latched (Dismiss)", { vm.testLatchedAlert() })
                 SecondaryButton("Simulate drive.result", { vm.simulateResult() })
                 SecondaryButton("Force sync", vm::forceSync)
                 SecondaryButton("Drop engine connection", vm::drop)
                 SecondaryButton("Re-register car", { vm.reRegister() })
                 PrimaryButton("Wipe local data", { vm.wipe() }, color = CarColors.Red)
             }
-            message?.let { VSpace(8.dp); Text(it, color = CarColors.Amber) }
-            info?.let { VSpace(8.dp); Text("Engine: ${it.engineVersion} · session ${it.activeSessionId ?: "none"} · ${it.supportedActions.joinToString()}", color = CarColors.Muted) }
+            message?.let { VSpace(Space.M); Text(it, color = CarColors.Amber) }
+            info?.let { VSpace(Space.M); Text("Engine: ${it.engineVersion} · session ${it.activeSessionId ?: "none"} · ${it.supportedActions.joinToString()}", color = CarColors.Muted) }
         }
-        Column(Modifier.weight(1f)) {
-            Text("Engine messages (last ${traffic.size})", style = MaterialTheme.typography.titleMedium)
+        SectionCard(Modifier.weight(1f).fillMaxHeight(), title = "Engine messages (last ${traffic.size})") {
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 items(traffic.reversed()) { l ->
                     Text(
                         "${fmt.format(Date(l.atMs))} ${if (l.outgoing) "→" else "←"} ${l.text}",
                         fontFamily = FontFamily.Monospace, fontSize = 14.sp,
-                        color = if (l.outgoing) CarColors.Accent else CarColors.OnDark,
+                        color = if (l.outgoing) CarColors.Orange else CarColors.OnDark,
                     )
                 }
             }

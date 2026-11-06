@@ -42,7 +42,7 @@ class RootViewModel @Inject constructor(
     drives: DriveRepository,
     drivers: DriverRepository,
     prefs: AppPreferences,
-    alerts: AlertPresenter,
+    private val alerts: AlertPresenter,
 ) : ViewModel() {
     val appState: StateFlow<AppState> = sessionManager.state
     val drivingState: StateFlow<DrivingState> = drivingStateMonitor.state
@@ -61,4 +61,7 @@ class RootViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatusBarState())
 
     fun onUserInteraction() = sessionManager.onUserInteraction()
+
+    /** Dismiss button on a latched alert (spec §9.1). */
+    fun dismissAlert(alertId: String) = alerts.dismiss(alertId)
 }
