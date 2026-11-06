@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -29,7 +28,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.provider.Settings
 import com.hackathon.drivescore.core.model.AlertLevel
 import com.hackathon.drivescore.service.DisplayedAlert
 
@@ -40,8 +38,7 @@ import com.hackathon.drivescore.service.DisplayedAlert
 @Composable
 fun AlertOverlay(alert: DisplayedAlert?) {
     if (alert == null) return
-    val context = LocalContext.current
-    val animationsOff = Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    val animationsOff = !rememberAnimationsEnabled()
     val t = rememberInfiniteTransition(label = "alert")
     val pulse by t.animateFloat(0.55f, 1f, infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "p")
     val p = if (animationsOff) 1f else pulse

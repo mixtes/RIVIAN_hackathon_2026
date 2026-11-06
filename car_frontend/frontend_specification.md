@@ -162,10 +162,10 @@ General layout: **landscape**, dark theme by default. A persistent **top status 
 
 ### 6.3 Drive screen: `SESSION_ACTIVE`
 Minimal and glanceable, since this is the screen visible while driving:
-- A large "**Tracking, \<Display name\>**", elapsed time, and a pulsing status dot.
-- Engine status chip: `Engine ✓`, or `Reconnecting…` in amber.
-- **No live score.** The engine only scores at the end of the drive.
-- While **parked**, it also shows the "End drive" button and access to the navigation rail.
+- A small "**TRACKING**" label with a pulsing orange dot, and the driver's **display name** in large type below it, over a calm animated backdrop (teal glow, slow concentric rings).
+- **No elapsed-time counter** and **no live score.** The engine only scores at the end of the drive.
+- A `Reconnecting…` chip in amber appears only while the engine is not connected (the status bar always shows the engine dot).
+- While **parked**, it also shows the "End drive" button and access to the navigation rail. While moving, the button slot shows "Drive safely".
 - An alerts overlay is drawn on top (§6.9).
 
 ### 6.4 Drive Result: `RESULT`
@@ -189,7 +189,8 @@ Minimal and glanceable, since this is the screen visible while driving:
 | 🍔 Eating / drinking | 0 | – | – |
 | 🚬 Smoking | 0 | – | – |
 
-- All 8 known types are always listed, with zero rows dimmed. Unknown types reported by the engine are appended with their raw name, title-cased.
+- All 8 known types are always listed, with zero rows in muted text. Unknown types reported by the engine are appended with their raw name, title-cased.
+- **Severity color:** the Count cell is a pill colored by the mistake's rate per hour of driving (`count × 3600 / duration_s`): **green** for 0, **amber** for fewer than 2 per hour, **red** for 2 or more per hour (or any mistake when the drive has no duration). The pill also shows the rate, e.g. `1 · 6.0/h`, so the information isn't conveyed by color alone (§14). The rule is `MistakeSeverity` in `core/model`.
 - Durations are formatted as `s` below 60 s and `m:ss` above.
 - **Timeline** (if `events` were provided): a horizontal bar across the drive's duration, with colored marks per event type. Tap a mark to see its type, time, and duration.
 
@@ -337,7 +338,7 @@ Other rules:
 | App → Engine | `session.end` | `{ "session_id": "uuid", "reason": "MANUAL" \| "DRIVER_SWITCH" \| "IGNITION_OFF" \| "APP_SHUTDOWN" }` | The engine responds with `drive.result` |
 | Engine → App | `drive.result` | see §8.5 | May arrive **spontaneously** (the engine detected the drive end) or after `session.end` |
 | App → Engine | `drive.result.ack` | `{ "session_id": "uuid" }` | Sent **after** the result is persisted in Room |
-| Engine → App | `alert` | `{ "alert_id": "uuid", "session_id": "uuid", "type": "EYES_OFF_ROAD", "level": "AUDIO", "message": "Eyes on the road.", "duration_so_far_s": 1.2, "started_at": "ts", "ttl_s": 10 }` | One `alert_id` per **occurrence** of an action. Each escalation of the same occurrence is re-sent with the **same `alert_id`** and a higher `level`. |
+| Engine → App | `alert` | `{ "alert_id": "uuid", "session_id": "uuid", "type": "EYES_OFF_ROAD", "level": "AUDIO", "message": "Eyes on the road.", "duration_so_far_s": 1.2, "started_at": "ts", "ttl_s": 10 }` | One `alert_id` per **occurrence** of an action. Each escalation of the same occurrence is re-sent with the **same `alert_id`** and a higher `level`. While the action stays active, the engine also re-sends the current alert every 5 s at the same level (keep-alive), which restarts `ttl_s` without a new sound. |
 | Engine → App | `alert.clear` | `{ "alert_id": "uuid" }` | The action ended (`on_event(action, is_active=False)`) or the session ended |
 | Engine → App | `error` | `{ "code": "NO_ACTIVE_SESSION", "message": "…", "ref_msg_id": "uuid" }` | Logged. Shown in the debug view. |
 
@@ -637,7 +638,8 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 
 ## 14. UX and Design Guidelines
 
-- **Theme:** dark by default (background `#0E1116`, surface `#1A1F27`). Accent is a brand-neutral blue. Score colors: green `#2BB673`, amber `#F5A524`, red `#E5484D`. Alert colors are reserved for alerts.
+- **Theme:** dark by default, in deep blue-teal tones with a green undertone (background `#0A1C22` fading to `#06141A`, surface `#10272E`, raised surface `#17343C`, outline `#264A52`, teal `#3A9FAE`, soft teal `#8FD3D1` for secondary text and icons). The single action accent is a warm Claude-like orange (`#E08A67` for text and dots, `#C96442` as the button fill with white text). Score colors: green `#45C08A`, amber `#F2B33D`, red `#E5534B`. Alert colors are reserved for alerts and scores. Avoid translucent orange over teal (it turns brown): selected states use solid orange or a teal surface. Tokens live in `core/designsystem/Theme.kt` (`CarColors`).
+- **Layout tokens:** one spacing scale (`Space`: 8 / 12 / 16 / 24 / 32 / 48 dp), screen padding 32 dp, card padding 24 dp, card radius 24 dp, control radius 20 dp. All buttons are 80 dp tall (min. width 220 dp). Every screen uses `CarScreen` / `ScreenHeader` so titles start at the same place, and every card is a `SectionCard`. Profile tiles have one fixed size.
 - **Typography:** a large-scale type ramp (body 24 sp, title 32 sp, display 64–96 sp for the score).
 - **Motion:** subtle. Only the CRITICAL overlay pulses (1 Hz). Respects the system "remove animations" setting.
 - **Glanceability:** a driver should be able to read any screen shown while driving in < 2 s.

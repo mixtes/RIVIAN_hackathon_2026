@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
@@ -23,6 +24,8 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -50,6 +53,10 @@ import com.hackathon.drivescore.R
 import com.hackathon.drivescore.core.designsystem.AlertOverlay
 import com.hackathon.drivescore.core.designsystem.Avatar
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarDimens
+import com.hackathon.drivescore.core.designsystem.CarShapes
+import com.hackathon.drivescore.core.designsystem.Space
+import com.hackathon.drivescore.core.designsystem.VSpace
 import com.hackathon.drivescore.core.designsystem.PulsingDot
 import com.hackathon.drivescore.core.model.AppState
 import com.hackathon.drivescore.core.model.ConnectionStatus
@@ -109,7 +116,7 @@ fun AppRoot(vm: RootViewModel) {
     }
 
     CompositionLocalProvider(LocalDrivingState provides driving, LocalContentColor provides CarColors.OnDark) {
-        Box(Modifier.fillMaxSize().background(CarColors.Background)) {
+        Box(Modifier.fillMaxSize().background(CarColors.backgroundBrush)) {
             Column(Modifier.fillMaxSize()) {
                 StatusBar(status, driving)
                 Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -120,7 +127,12 @@ fun AppRoot(vm: RootViewModel) {
                 }
             }
             AlertOverlay(alert)
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(Space.L)) { data ->
+                Snackbar(
+                    data, shape = CarShapes.Control,
+                    containerColor = CarColors.SurfaceHigh, contentColor = CarColors.OnDark, actionColor = CarColors.Orange,
+                )
+            }
         }
     }
 }
@@ -215,62 +227,78 @@ private fun NavRail(nav: NavHostController, route: String?) {
         Item(Routes.LEADERBOARD, Icons.Filled.EmojiEvents, R.string.nav_leaderboard),
         Item(Routes.SETTINGS, Icons.Filled.Settings, R.string.nav_settings),
     )
-    NavigationRail(containerColor = CarColors.Surface, modifier = Modifier.fillMaxHeight()) {
-        items.forEach { item ->
-            NavigationRailItem(
-                selected = route == item.route,
-                onClick = {
-                    if (item.route == Routes.HOME) nav.popBackStack(Routes.HOME, false)
-                    else nav.navigate(item.route) { popUpTo(Routes.HOME); launchSingleTop = true }
-                },
-                icon = { Icon(item.icon, contentDescription = stringResource(item.label), Modifier.size(40.dp)) },
-                label = { Text(stringResource(item.label), style = MaterialTheme.typography.bodySmall) },
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
+    val colors = NavigationRailItemDefaults.colors(
+        selectedIconColor = CarColors.Orange, selectedTextColor = CarColors.Orange,
+        indicatorColor = CarColors.TealDeep,
+        unselectedIconColor = CarColors.Muted, unselectedTextColor = CarColors.Muted,
+    )
+    Row(Modifier.fillMaxHeight()) {
+        NavigationRail(containerColor = CarColors.Surface, modifier = Modifier.fillMaxHeight().width(120.dp)) {
+            VSpace(Space.M)
+            items.forEach { item ->
+                NavigationRailItem(
+                    selected = route == item.route,
+                    onClick = {
+                        if (item.route == Routes.HOME) nav.popBackStack(Routes.HOME, false)
+                        else nav.navigate(item.route) { popUpTo(Routes.HOME); launchSingleTop = true }
+                    },
+                    icon = { Icon(item.icon, contentDescription = stringResource(item.label), Modifier.size(40.dp)) },
+                    label = { Text(stringResource(item.label), style = MaterialTheme.typography.bodySmall, maxLines = 1) },
+                    colors = colors,
+                    modifier = Modifier.padding(vertical = Space.XS),
+                )
+            }
         }
+        Box(Modifier.fillMaxHeight().width(1.dp).background(CarColors.Outline))
     }
 }
 
 /** Top status bar: driver, tracking, engine dot, online, pending uploads (spec §6). */
 @Composable
 private fun StatusBar(s: StatusBarState, driving: DrivingState) {
-    Row(
-        Modifier.fillMaxWidth().height(64.dp).background(CarColors.Surface).padding(horizontal = 24.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(24.dp),
-    ) {
-        if (s.driver != null) {
-            Avatar(s.driver.initials, s.driver.avatarColor, 44.dp)
-            Text(s.driver.displayName, style = MaterialTheme.typography.titleMedium)
-        } else {
-            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium)
-        }
-        if (s.tracking) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PulsingDot(CarColors.Red, 16.dp)
-                Text(stringResource(R.string.tracking), style = MaterialTheme.typography.bodyMedium)
+    Column {
+        Row(
+            Modifier.fillMaxWidth().height(CarDimens.StatusBarHeight).background(CarColors.Surface).padding(horizontal = Space.L),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Space.L),
+        ) {
+            if (s.driver != null) {
+                Avatar(s.driver.initials, s.driver.avatarColor, 48.dp)
+                Text(s.driver.displayName, style = MaterialTheme.typography.titleMedium)
+            } else {
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium, color = CarColors.TealSoft)
             }
+            if (s.tracking) {
+                Row(
+                    Modifier.clip(CarShapes.Pill).background(CarColors.SurfaceHigh).padding(horizontal = Space.M, vertical = Space.XS),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.XS),
+                ) {
+                    PulsingDot(CarColors.Orange, 14.dp)
+                    Text(stringResource(R.string.tracking), style = MaterialTheme.typography.bodySmall, color = CarColors.Orange)
+                }
+            }
+            Box(Modifier.weight(1f))
+            if (driving == DrivingState.MOVING) Text(stringResource(R.string.moving), color = CarColors.Muted, style = MaterialTheme.typography.bodySmall)
+            StatusDot(
+                stringResource(R.string.engine),
+                when (s.engine) {
+                    ConnectionStatus.CONNECTED -> CarColors.Green
+                    ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> CarColors.Amber
+                    ConnectionStatus.DISCONNECTED -> CarColors.Red
+                },
+            )
+            StatusDot(stringResource(if (s.online) R.string.online else R.string.offline), if (s.online) CarColors.Green else CarColors.Muted)
+            if (s.pendingUploads > 0) Text("⇡ ${s.pendingUploads}", style = MaterialTheme.typography.bodySmall, color = CarColors.Amber)
+            if (s.carRevoked) Text(stringResource(R.string.car_revoked_short), color = CarColors.Red, style = MaterialTheme.typography.bodySmall)
         }
-        Box(Modifier.weight(1f))
-        if (driving == DrivingState.MOVING) Text(stringResource(R.string.moving), color = CarColors.Muted, style = MaterialTheme.typography.bodyMedium)
-        StatusDot(
-            stringResource(R.string.engine),
-            when (s.engine) {
-                ConnectionStatus.CONNECTED -> CarColors.Green
-                ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> CarColors.Amber
-                ConnectionStatus.DISCONNECTED -> CarColors.Red
-            },
-        )
-        StatusDot(stringResource(if (s.online) R.string.online else R.string.offline), if (s.online) CarColors.Green else CarColors.Muted)
-        if (s.pendingUploads > 0) Text("⇡ ${s.pendingUploads}", style = MaterialTheme.typography.bodyMedium, color = CarColors.Amber)
-        if (s.carRevoked) Text(stringResource(R.string.car_revoked_short), color = CarColors.Red, style = MaterialTheme.typography.bodyMedium)
+        Box(Modifier.fillMaxWidth().height(1.dp).background(CarColors.Outline))
     }
 }
 
 @Composable
 private fun StatusDot(label: String, color: androidx.compose.ui.graphics.Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.size(14.dp).clip(CircleShape).background(color))
-        Text(label, style = MaterialTheme.typography.bodySmall)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.XS)) {
+        Box(Modifier.size(12.dp).clip(CircleShape).background(color))
+        Text(label, style = MaterialTheme.typography.bodySmall, color = CarColors.Muted)
     }
 }

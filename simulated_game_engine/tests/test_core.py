@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import uuid
 
@@ -184,6 +185,28 @@ def test_eyes_off_road_full_escalation(core, clock) -> None:
     for msg, threshold in zip(out, (1.0, 2.5, 4.0), strict=True):
         assert threshold <= msg["payload"]["duration_so_far_s"] <= threshold + 0.15
     assert out[-1]["payload"]["ttl_s"] == 15
+
+
+def test_still_active_alert_is_refreshed_so_the_app_does_not_expire_it(core, clock) -> None:
+    _start(core)
+    core.set_action("eyes_off_road", True)
+    out = of_type(run_for(core, clock, 30.0), p.ALERT)
+    levels = [m["payload"]["level"] for m in out]
+    assert levels[:3] == ["AUDIO", "HAPTIC", "CRITICAL"]
+    refreshes = out[3:]
+    # CRITICAL at 4 s, then a keep-alive every 5 s: 9, 14, 19, 24, 29 s
+    assert len(refreshes) == 5
+    assert {m["payload"]["level"] for m in refreshes} == {"CRITICAL"}
+    assert {m["payload"]["alert_id"] for m in out} == {out[0]["payload"]["alert_id"]}
+    assert all(m["payload"]["started_at"] == out[0]["payload"]["started_at"] for m in out)
+    gaps = [b["payload"]["duration_so_far_s"] - a["payload"]["duration_so_far_s"]
+            for a, b in itertools.pairwise(out[2:])]
+    assert all(4.95 <= g <= 5.15 for g in gaps)  # within one 0.1 s tick
+    assert max(gaps) < p.DEFAULT_TTL_S["VISUAL"]  # always inside the shortest app ttl
+
+    [clear] = core.set_action("eyes_off_road", False)
+    assert clear["type"] == p.ALERT_CLEAR
+    assert run_for(core, clock, 10.0) == []      # no refresh after the action ended
 
 
 def test_action_ending_before_first_alert_sends_no_clear(core, clock) -> None:

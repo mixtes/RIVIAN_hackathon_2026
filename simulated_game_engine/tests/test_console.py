@@ -53,6 +53,18 @@ async def test_bad_commands(console) -> None:
             await con.execute(line)
 
 
+async def test_end_with_an_action_does_not_end_the_drive(console, core) -> None:
+    con, ft = console
+    core.handle(start_msg())
+    await con.execute("start eyes_off_road")
+    with pytest.raises(ValueError, match="stop eyes_off_road"):
+        await con.execute("end eyes_off_road")
+    with pytest.raises(ValueError, match="takes no arguments"):
+        await con.execute("status now")
+    assert core.session is not None and "eyes_off_road" in core.active_actions
+    assert p.DRIVE_RESULT not in [m["type"] for m in ft.sent]
+
+
 async def test_auto_and_scenario_toggle(console, capsys) -> None:
     con, _ = console
     await con.execute("auto on")

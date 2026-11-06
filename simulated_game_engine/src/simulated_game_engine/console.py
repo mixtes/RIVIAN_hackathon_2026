@@ -24,11 +24,14 @@ Commands:
   auto on|off                 random driver behaviour during sessions
   scenario demo [fast|<speed>]  scripted ~2 min drive (waits for a session), then end
   scenario stop               cancel a running scenario
-  end                         end the drive now and send drive.result
+  end                         end the whole drive now and send drive.result
   drop                        close the car's connection (to test reconnects)
   help                        this text
   quit                        stop the bridge
 Actions are engine keys, e.g. phone_call, eyes_off_road (case-insensitive)."""
+
+
+NO_ARG_COMMANDS = frozenset({"help", "?", "quit", "exit", "status", "end", "drop"})
 
 
 class Console:
@@ -65,6 +68,11 @@ class Console:
         """Run one command. Returns False to quit."""
         args = shlex.split(line)
         cmd, rest = args[0].lower(), args[1:]
+        if cmd in NO_ARG_COMMANDS and rest:
+            # Never ignore extra words: `end eyes_off_road` used to end the whole drive.
+            hint = (f"; to stop an action use 'stop {rest[0]}'"
+                    if cmd == "end" and self.core.is_configured(rest[0]) else "")
+            raise ValueError(f"'{cmd}' takes no arguments{hint}")
         match cmd:
             case "help" | "?":
                 print(HELP)

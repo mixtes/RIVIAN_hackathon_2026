@@ -82,7 +82,7 @@ com.hackathon.drivescore
 │   ├── network/    Retrofit DriveScoreApi, DTOs, CarAuthInterceptor (Car token + X-Request-Id), BaseUrlInterceptor, ConnectivityMonitor, ApiFailure
 │   ├── engine/     Protocol + EngineCodec, EngineClient (OkHttp WS, backoff+jitter, ping 10 s), WebSocketEngineGateway (§8.4 rules), FakeEngineGateway, SwitchingEngineGateway
 │   ├── car/        DrivingStateMonitor (UX restrictions + override), VehicleSignals (ignition, behind a flag)
-│   └── designsystem/ theme, ScoreGauge, Keypad, PinDots, AlertOverlay, charts, timeline
+│   └── designsystem/ theme tokens (colors, Space, shapes), buttons, cards, CarScreen, ScoreGauge, Keypad, PinDots, DriveBackdrop, AlertOverlay, charts
 ├── data/           CarRepository, DriverRepository (PIN + lockout + linking), DriveRepository (DriveResultSink), Stats/Leaderboard (ApiCache, stale-while-revalidate), MetaRepository,
 │                   DriveResultMapper, DriveSyncer + UploadClassifier, SyncDrivesWorker, RegisterCarWorker, SyncScheduler
 ├── domain/         PinHasher (PBKDF2), PinRecord, PinLockoutPolicy
@@ -124,7 +124,7 @@ Implemented (milestones M1–M6):
 
 Stubbed or simplified (be aware):
 - **Sounds are generated placeholder WAVs** (`res/raw/chime_warning.wav`, `alarm_critical.wav`), not designed OGG assets. The double chime is the chime played twice.
-- **Dark theme only.** There is no light/day theme yet.
+- **Dark theme only** (deep teal + orange accent, see spec §14). There is no light/day theme yet.
 - **Vehicle signals** (ignition → end session) are wired behind a debug flag. They need `CAR_POWERTRAIN`, which a normal app won't get, so they are untested on real hardware.
 - **Real haptics** don't exist on AAOS for apps. `HAPTIC` is a red pulsing banner plus a double chime, per the spec.
 - **Debug screen strings** are hard-coded in English. All user-facing strings are in `strings.xml`.

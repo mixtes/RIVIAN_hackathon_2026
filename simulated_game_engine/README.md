@@ -57,7 +57,7 @@ uv run python -m simulated_game_engine --no-cli --auto --seed 7
 | `auto on\|off` | random behaviour: every 15–45 s, one configured action is held for 0.5–7 s |
 | `scenario demo [fast\|<speed>]` | about 2 minutes: phone call 4.5 s (VISUAL → AUDIO), eyes off road 5 s (AUDIO → HAPTIC → CRITICAL), a clean stretch, then `end`. It waits for a session if none is active. |
 | `scenario stop` | cancel it |
-| `end` | end the drive now. Sends `drive.result` (`extra.end_reason = "ENGINE"`). |
+| `end` | end the **whole drive** now. Sends `drive.result` (`extra.end_reason = "ENGINE"`). Takes no arguments: to end one action, use `stop <action>`. |
 | `drop` | close the car's connection, to test reconnects |
 | `quit` (or Ctrl-D) | stop the bridge |
 

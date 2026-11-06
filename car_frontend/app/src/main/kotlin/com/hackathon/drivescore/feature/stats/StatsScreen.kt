@@ -1,13 +1,8 @@
 package com.hackathon.drivescore.feature.stats
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,6 +19,8 @@ import com.hackathon.drivescore.core.common.Clock
 import com.hackathon.drivescore.core.common.Formatters
 import com.hackathon.drivescore.core.designsystem.Banner
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarScreen
+import com.hackathon.drivescore.core.designsystem.Space
 import com.hackathon.drivescore.core.designsystem.KpiTile
 import com.hackathon.drivescore.core.designsystem.MistakeBars
 import com.hackathon.drivescore.core.designsystem.SectionCard
@@ -95,60 +92,51 @@ class StatsViewModel @Inject constructor(
 @Composable
 fun StatsScreen(vm: StatsViewModel = hiltViewModel()) {
     val ui by vm.ui.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())) {
-        Text(stringResource(R.string.nav_stats), style = MaterialTheme.typography.headlineLarge)
-        VSpace(12.dp)
+    CarScreen(title = stringResource(R.string.nav_stats)) {
         PeriodTabs(ui.period, vm::select)
-        VSpace(12.dp)
+        VSpace(Space.L)
         when {
-            ui.source == StatsSource.LOCAL_ONLY -> Banner(stringResource(R.string.offline_this_car_only))
-            !ui.online && ui.fetchedAt != null -> Banner(stringResource(R.string.last_updated, Formatters.minutesAgo(ui.fetchedAt!!, vm.clock.nowMs())))
+            ui.source == StatsSource.LOCAL_ONLY -> { Banner(stringResource(R.string.offline_this_car_only), accent = CarColors.Amber); VSpace(Space.L) }
+            !ui.online && ui.fetchedAt != null -> { Banner(stringResource(R.string.last_updated, Formatters.minutesAgo(ui.fetchedAt!!, vm.clock.nowMs())), accent = CarColors.Amber); VSpace(Space.L) }
         }
-        val s = ui.stats ?: run { Text(stringResource(R.string.loading), style = MaterialTheme.typography.bodyLarge); return }
-        VSpace(12.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            KpiTile(stringResource(R.string.weighted_score), s.weightedScore?.let { Formatters.score(it) } ?: "–", Modifier.weight(1.4f),
-                valueColor = s.weightedScore?.let { CarColors.score(it) } ?: CarColors.OnDark, big = true)
+        val s = ui.stats ?: run { Text(stringResource(R.string.loading), style = MaterialTheme.typography.bodyLarge, color = CarColors.Muted); return@CarScreen }
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
+            KpiTile(stringResource(R.string.weighted_score), s.weightedScore?.let { Formatters.score(it) } ?: "–", Modifier.weight(1f),
+                valueColor = s.weightedScore?.let { CarColors.score(it) } ?: CarColors.OnDark)
             KpiTile(stringResource(R.string.drives), s.driveCount.toString(), Modifier.weight(1f))
             KpiTile(stringResource(R.string.driving_time), Formatters.drivingTime(s.totalDurationS), Modifier.weight(1f))
             KpiTile(stringResource(R.string.best_score), s.bestScore?.let { Formatters.score(it) } ?: "–", Modifier.weight(1f))
         }
         s.rank?.let { r ->
-            VSpace(16.dp)
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                RankTile(r.region, "${Formatters.flagEmoji(r.region?.code ?: ui.regionCode)} ${r.region?.code ?: ui.regionCode}", Modifier.weight(1f))
-                RankTile(r.global, stringResource(R.string.global), Modifier.weight(1f))
+            VSpace(Space.L)
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
+                val regionCode = r.region?.code ?: ui.regionCode
+                RankTile(r.region, stringResource(R.string.my_region, regionCode), "${Formatters.flagEmoji(regionCode)} $regionCode", Modifier.weight(1f))
+                RankTile(r.global, stringResource(R.string.global), stringResource(R.string.global), Modifier.weight(1f))
             }
         }
         if (s.series.isNotEmpty()) {
-            VSpace(16.dp)
-            SectionCard(Modifier.fillMaxWidth()) {
-                Column {
-                    Text(stringResource(R.string.trend), style = MaterialTheme.typography.titleMedium)
-                    VSpace(8.dp)
-                    TrendChart(s.series.map { TrendPoint(it.weightedScore, it.driveCount) })
-                }
+            VSpace(Space.L)
+            SectionCard(Modifier.fillMaxWidth(), title = stringResource(R.string.trend)) {
+                TrendChart(s.series.map { TrendPoint(it.weightedScore, it.driveCount) })
             }
         }
         if (s.mistakes.isNotEmpty()) {
-            VSpace(16.dp)
-            SectionCard(Modifier.fillMaxWidth()) {
-                Column {
-                    Text(stringResource(R.string.mistake_breakdown), style = MaterialTheme.typography.titleMedium)
-                    MistakeBars(s.mistakes.sortedByDescending { it.count }.map { Triple(it.type, it.count, it.perHour) })
-                }
+            VSpace(Space.L)
+            SectionCard(Modifier.fillMaxWidth(), title = stringResource(R.string.mistake_breakdown)) {
+                MistakeBars(s.mistakes.sortedByDescending { it.count }.map { Triple(it.type, it.count, it.perHour) })
             }
         }
     }
 }
 
 @Composable
-private fun RankTile(r: RankDto?, scope: String, modifier: Modifier) {
+private fun RankTile(r: RankDto?, title: String, scope: String, modifier: Modifier) {
     val text = when {
         r == null -> "–"
         r.qualified && r.rank != null -> stringResource(R.string.rank_of, r.rank, "%,d".format(r.totalRanked), scope)
         r.minutesNeeded != null -> stringResource(R.string.drive_more_to_qualify, r.minutesNeeded)
         else -> stringResource(R.string.not_ranked_yet_scope, scope)
     }
-    SectionCard(modifier) { Text(text, style = MaterialTheme.typography.titleLarge) }
+    SectionCard(modifier, title = title) { Text(text, style = MaterialTheme.typography.titleLarge) }
 }

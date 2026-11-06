@@ -2,3 +2,4 @@
 - [RivianHackatonEngine] Please use these canonical action keys when adding new actions: `eyes_closed`, `yawn`, `hands_off_wheel`, `phone_use`, `eating_drinking`, `smoking` (plus the existing `phone_call`, `eyes_off_road`). They map 1:1 to the backend/app mistake types (upper-cased).
 - [RivianHackatonEngine] Optional: emit an explicit "alert cleared" signal from `AlertEngine` (the existing TODO). The bridge currently derives clears from `is_active=False`.
 - [RivianHackatonEngine] Optional: expose an engine version string (e.g. `__version__`), so drive results report a meaningful `engine_version`.
+- [RivianHackatonEngine] Optional: `AlertEngine` only reports escalations, so a long-held action produces no further alerts and the car app expires the warning after `ttl_s`. The bridge works around this with a 5 s keep-alive. A built-in option (e.g. re-emit the current level every N s while active) would make that unnecessary.

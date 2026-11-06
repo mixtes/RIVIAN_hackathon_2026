@@ -24,6 +24,10 @@ log = logging.getLogger("simulated_game_engine.core")
 
 TickMode = Literal["per-action", "engine"]
 
+# Re-send the current alert of every still-active action this often. The engine only reports
+# escalations, and the app drops an alert `ttl_s` (8-15 s) after its last update, so without
+# this an ongoing action's warning would disappear while the driver is still distracted.
+ALERT_REFRESH_S = 5.0
 
 
 MAX_ENGINE_VERSION_LEN = 40  # backend drives.engine_version is VARCHAR(40)
@@ -49,6 +53,7 @@ class Session:
 class _AlertState:
     alert_id: str
     last: p.AlertOut | None = None
+    sent_at: float = float("-inf")  # monotonic time `last` was last sent
 
 
 @dataclass
@@ -64,12 +69,14 @@ class BridgeCore:
     """Wraps one `SafetySystem`. Only one session at a time (one car)."""
 
     def __init__(self, system: Any, clock: Clock, *, engine_version: str,
-                 tick_mode: TickMode = "per-action", ended_history: int = 500) -> None:
+                 tick_mode: TickMode = "per-action", ended_history: int = 500,
+                 alert_refresh_s: float = ALERT_REFRESH_S) -> None:
         self.system = system
         self.clock = clock
         # The backend column is VARCHAR(40); a longer value would make every upload fail with 422.
         self.engine_version = engine_version[:MAX_ENGINE_VERSION_LEN]
         self.tick_mode: TickMode = tick_mode
+        self.alert_refresh_s = alert_refresh_s
         self.session: Session | None = None
         # action (lower-case) -> monotonic start, for actions the simulator holds active
         self.active_actions: dict[str, float] = {}
@@ -235,7 +242,23 @@ class BridgeCore:
             # every action's escalation comes back, not just the most severe one.
             alerts = [self.system.on_event(a, True, t)
                       for a in self.system.alerts.active_actions()]
-        return [self._alert(a) for a in alerts if a is not None]
+        out = [self._alert(a) for a in alerts if a is not None]
+        out.extend(self._refresh_alerts(t))
+        return out
+
+    def _refresh_alerts(self, t: float) -> list[p.Message]:
+        """Keep-alive: re-send the latest alert (same id and level, so the app plays no new
+        sound) of each action still active, so the app does not expire it after `ttl_s`."""
+        out: list[p.Message] = []
+        for action, state in self._alerts.items():
+            started = self.active_actions.get(action)
+            if state.last is None or started is None or t - state.sent_at < self.alert_refresh_s:
+                continue
+            state.last = state.last.model_copy(
+                update={"duration_so_far_s": round(t - started, 2)})
+            state.sent_at = t
+            out.append(self._env(p.ALERT, state.last))
+        return out
 
     def end_session(self, reason: str = p.ENGINE_END_REASON) -> list[p.Message]:
         """End the drive from the bridge side (CLI `end`, scenario): spontaneous result."""
@@ -286,6 +309,7 @@ class BridgeCore:
             started_at=p.iso(self.session.wall(alert.timestamp - alert.duration_so_far)),
             ttl_s=p.DEFAULT_TTL_S.get(level, 10),
         )
+        state.sent_at = self.clock.monotonic()
         return self._env(p.ALERT, state.last)
 
     def _env(self, msg_type: str, payload: BaseModel) -> p.Message:
