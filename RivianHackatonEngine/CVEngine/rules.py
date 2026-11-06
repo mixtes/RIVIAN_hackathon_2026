@@ -1,14 +1,13 @@
 """Step 2: rules on the cached keypoints/phone boxes -> events.csv (with frame numbers) + frame_flags.csv.
 Usage: python3 rules.py [out/cache.npz]
+Requires wheel.json next to the cache; no camera-specific fallback is used.
 """
-import numpy as np, cv2, csv, sys, os
+import numpy as np, cv2, csv, sys, os, json
 from scipy.ndimage import median_filter
 
 FPS = 30
 # ---- CONFIG (adjust for your camera / car) ---------------------------------
-# Steering-wheel zone in full-frame pixels. THIS IS CAMERA-SPECIFIC: redraw it for every new setup.
-WHEEL = np.array([(1330,1250),(1450,1130),(1600,1060),(1740,1060),(1790,1180),(1760,1380),(1650,1500),(1450,1536),(1330,1450)], np.int32)
-WHEEL_MARGIN = 60          # a hand this many px outside the zone still counts as on the wheel
+WHEEL_MARGIN = 60          # legacy manual-zone tolerance; newer calibrations specify their own
 KP_CONF = 0.35             # ignore keypoints below this confidence
 LAP_MIN, PITCH_MIN = 0.85, 0.17     # lap / head-down thresholds (tuned on ONE clip -> re-tune)
 MIN_DUR = {'PHONE_AT_EAR': 1.0, 'PHONE_IN_HAND': 1.0, 'HEAD_DOWN_HAND_IN_LAP': 1.0,
@@ -17,19 +16,53 @@ MIN_DUR = {'PHONE_AT_EAR': 1.0, 'PHONE_IN_HAND': 1.0, 'HEAD_DOWN_HAND_IN_LAP': 1
 NOSE, LEAR, REAR, LSHO, RSHO, LWR, RWR = 0, 3, 4, 5, 6, 9, 10
 
 def load(cache):
-    d = np.load(cache); return d['P'], d['PH'], d['done']
+    with np.load(cache) as d:
+        return d['P'], d['PH'], d['done']
 
-def on_wheel(pt):
-    return cv2.pointPolygonTest(WHEEL.reshape(-1,1,2), (float(pt[0]), float(pt[1])), True) >= -WHEEL_MARGIN
+def load_wheel(cache, frame_size=None):
+    path = os.path.join(os.path.dirname(cache) or '.', 'wheel.json')
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f'Missing wheel calibration: {path}. Run auto_wheel.py for this video first.')
+    with open(path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f'Invalid wheel calibration in {path}: expected an object.')
+    size = np.asarray(data.get('frame_size'))
+    if (size.shape != (2,) or not np.issubdtype(size.dtype, np.number)
+            or not np.isfinite(size).all() or (size <= 0).any()
+            or not np.equal(size, np.floor(size)).all()):
+        raise ValueError(f'Invalid frame_size in {path}: expected positive integer [width, height].')
+    if frame_size is not None and not np.array_equal(size, frame_size):
+        raise ValueError(f'Wheel calibration dimensions {size.tolist()} do not match '
+                         f'video dimensions {list(frame_size)}. Recalibrate for this video.')
+    points = np.asarray(data.get('wheel'))
+    if (points.ndim != 2 or points.shape[1] != 2 or len(points) < 3
+            or not np.issubdtype(points.dtype, np.number)
+            or not np.isfinite(points).all() or (points < 0).any()
+            or (points > size).any()):
+        raise ValueError(f'Invalid wheel polygon in {path}: expected at least three in-frame [x, y] points.')
+    wheel = np.rint(points).astype(np.int32)
+    if cv2.contourArea(wheel) <= 0:
+        raise ValueError(f'Invalid wheel polygon in {path}: polygon has no area.')
+    margin = data.get('wrist_margin_px', 0 if data.get('source') == 'auto_wheel' else WHEEL_MARGIN)
+    if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+            or not np.isfinite(margin) or margin != int(margin) or not 0 <= margin <= min(size)):
+        raise ValueError(f'Invalid wrist_margin_px in {path}: expected a nonnegative integer '
+                         'no greater than the smaller frame dimension.')
+    return wheel, int(margin)
 
-def frame_flags(kp, phones):
+def on_wheel(pt, wheel, margin):
+    return cv2.pointPolygonTest(wheel.reshape(-1,1,2), (float(pt[0]), float(pt[1])), True) >= -margin
+
+def frame_flags(kp, phones, wheel, margin):
     if np.isnan(kp[:,0]).all(): return None
     ok = lambda i: kp[i,2] >= KP_CONF
     sw = np.hypot(*(kp[LSHO,:2]-kp[RSHO,:2])) if ok(LSHO) and ok(RSHO) else 350.0   # shoulder width = scale
     wr = [kp[i,:2] for i in (LWR, RWR) if ok(i)]
     ears = [kp[i,:2] for i in (LEAR, REAR, NOSE) if ok(i)]
-    n_wheel = sum(on_wheel(w) for w in wr)
-    wrist_ear = any(np.hypot(*(w-e)) < 0.65*sw and not on_wheel(w) for w in wr for e in ears)
+    n_wheel = sum(on_wheel(w, wheel, margin) for w in wr)
+    wrist_ear = any(np.hypot(*(w-e)) < 0.65*sw and not on_wheel(w, wheel, margin) for w in wr for e in ears)
     ph = [p for p in phones if not np.isnan(p[0])]
     centers = [((p[0]+p[2])/2, (p[1]+p[3])/2) for p in ph]
     phone_near_head = any(np.hypot(c[0]-e[0], c[1]-e[1]) < 0.8*sw for c in centers for e in ears)
@@ -41,7 +74,7 @@ def frame_flags(kp, phones):
     lap = False
     if ok(LSHO) and ok(RSHO):
         sy = (kp[LSHO,1] + kp[RSHO,1]) / 2
-        lap = any(((w[1]-sy)/sw) > LAP_MIN and not on_wheel(w) for w in wr)
+        lap = any(((w[1]-sy)/sw) > LAP_MIN and not on_wheel(w, wheel, margin) for w in wr)
     return {
         'HEAD_DOWN_HAND_IN_LAP': bool(lap and pitch > PITCH_MIN),
         'n_hands_on_wheel': n_wheel,
@@ -62,10 +95,11 @@ def segments(b, min_gap=FPS):
 
 def main(cache):
     out = os.path.dirname(cache) or '.'
+    wheel, margin = load_wheel(cache)
     P, PH, done = load(cache); N = len(P); names = list(MIN_DUR)
     raw = {k: np.zeros(N, bool) for k in names}; nh = np.full(N, -1); last = None
     for i in range(N):
-        if done[i]: last = frame_flags(P[i,1], PH[i])
+        if done[i]: last = frame_flags(P[i,1], PH[i], wheel, margin)
         if last is None: continue
         nh[i] = last['n_hands_on_wheel']
         for k in names: raw[k][i] = last[k]
@@ -90,7 +124,7 @@ def main(cache):
     for e in events:
         state[e['event']][e['onset_frame']:e['end_frame']+1] = 1
         state[e['event']][e['alert_frame']:e['end_frame']+1] = 2
-    np.savez(os.path.join(out,'flags.npz'), nh=nh, **state)
+    np.savez(os.path.join(out,'flags.npz'), nh=nh, wheel=wheel, wheel_margin=margin, **state)
     print(f'frames processed: {int(done.sum())}/{N}')
     for e in events: print(e)
 

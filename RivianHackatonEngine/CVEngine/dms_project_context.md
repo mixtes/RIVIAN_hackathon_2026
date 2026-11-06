@@ -28,31 +28,53 @@ The user wants to be able to add events later and be specific about detection lo
 |---|---|
 | `download_models.py` | Downloads `yolo11m-pose.pt` and `yolo11m.pt` with resume/retry (the user's network resets GitHub downloads). |
 | `extract.py` | Runs pose (imgsz 640) on every frame + phone detection (imgsz 640, conf 0.15) on a driver-area crop starting at (760, 600). Caches results to `out/cache.npz`. Even frames first, then odd. Slot 1 = driver (box center x > W/2), slot 0 = passenger. Config at top: `CX0, CY0`, `DRIVER_ON_RIGHT`. |
-| `rules.py` | Rule engine: per-frame flags, temporal smoothing, event list. Writes `events.csv`, `frame_flags.csv`, `flags.npz`. Loads `wheel.json` from the same folder as the cache (else the default zone with a warning). |
+| `rules.py` | Rule engine: per-frame flags, temporal smoothing, event list. Writes `events.csv`, `frame_flags.csv`, `flags.npz`. Requires `wheel.json` from the same folder as the cache; missing or invalid calibration is an error. |
 | `render.py` | Annotated video (frame number, skeleton, wheel zone, phone boxes, alerts) + a key-frame JPG per alert. |
-| `draw_wheel.py` | Click on a frame to draw the wheel zone, saves `wheel.json`. Manual override. GUI untested (headless sandbox). |
-| `download_wheel_models.py`, `auto_wheel.py` | Automatic wheel zone with YOLOE open-vocabulary segmentation ("steering wheel"). **Written but never successfully run/validated.** |
+| `draw_wheel.py` (not included) | Previously proposed manual calibration tool; unavailable in this checkout. |
+| `download_wheel_models.py`, `auto_wheel.py` | Automatic wheel zone with YOLOE open-vocabulary segmentation ("steering wheel"), refined by majority agreement across reliable frames. Tested locally on `05_23_62_005853_video_inCabin.mp4`; broader validation is still required. |
 
 All scripts use relative paths. Python 3.9 venv on the user's Mac (macOS, CPU), folder "rivian hackathon".
 
 ### Commands (per video)
 ```
-python3 auto_wheel.py my_video.mp4 out/wheel.json     # or: python3 draw_wheel.py my_video.mp4 out/wheel.json
+python3 auto_wheel.py my_video.mp4 out/wheel.json
 python3 extract.py my_video.mp4 out/cache.npz
 python3 rules.py out/cache.npz
 python3 render.py my_video.mp4 out/cache.npz
 ```
 Install: `python3 -m pip install ultralytics opencv-python numpy scipy`. Check `out/wheel_preview.jpg` before trusting an auto-detected zone.
 
+Rules and rendering use the saved polygon, not a hard-coded wheel location. Calibration must contain
+`wheel` (at least three full-frame pixel `[x, y]` points) and `frame_size` (`[width, height]`).
+New automatic calibrations specify `wrist_margin_px`: 15% of the wheel's shorter bounding-box
+dimension, to account for wrists lying outside the rim while fingers touch it. Rules apply only this
+saved margin. Older automatic zones without this field retain zero extra margin, and legacy manual
+polygons retain the 60 px tolerance. Rendering rejects a calibration whose dimensions differ
+from the video or whose polygon/margin differs from the saved flags; re-run rules after calibration changes.
+Existing pose/phone caches can be reused without model inference.
+
+Automatic calibration samples up to 16 distinct frames, rejects masks below confidence 0.15,
+checks box consistency, and retains samples scoring at least 40% of the best consistent detection.
+At least three reliable masks are required. A pixel must belong to a strict majority of the retained
+masks to enter the consensus; the largest external contour is simplified without a convex hull or
+outward dilation. Boxes alone are never accepted as wheel masks. This prevents a few oversized
+detections from expanding the zone into the driver's torso or dashboard. The output records
+`algorithm: "mask_majority_v1"` and the retained `sample_count`. Preview and video show the tight
+wheel contour in cyan and the separate wrist-tolerance boundary in blue, so the accepted area is visible.
+Existing calibrations are not automatically replaced: re-run `auto_wheel.py`, then rules and rendering,
+to use the new algorithm. Retain the old output directory when comparing results.
+The polygon still includes any enclosed interior: 2D wrist overlap is not proof of rim contact or grip,
+and consistently wrong masks or an occluded rim can still produce incorrect calibration.
+
 ## 5. Rules (in `rules.py`), thresholds tuned on ONE clip
 - Scale = shoulder width in pixels. Keypoints below conf 0.35 are ignored.
-- **Hand on wheel:** wrist inside the `WHEEL` polygon (margin 60 px). 0 hands = `HANDS_OFF_WHEEL`, 1 hand = `ONE_HAND_ON_WHEEL`.
+- **Hand on wheel:** wrist inside the calibrated polygon or within its saved `wrist_margin_px` tolerance (legacy defaults described above). 0 hands = `HANDS_OFF_WHEEL`, 1 hand = `ONE_HAND_ON_WHEEL`.
 - **PHONE_AT_EAR:** wrist within 0.65 x shoulder width of ear/nose and not on the wheel, OR a detected phone center within 0.8 x shoulder width of ear/nose.
 - **PHONE_IN_HAND:** phone box near a wrist and not near the head.
 - **HEAD_DOWN_HAND_IN_LAP (pose-only fallback):** off-wheel wrist more than 0.85 shoulder widths below the shoulder line AND head pitch (nose y minus mean ear y, over shoulder width) above 0.17. Normal driving gave pitch 0.08-0.15.
 - **Temporal logic:** median filter (9 frames), merge gaps up to 30 frames, minimum duration before an alert: 1.0 s for phone/head-down/hands-off, 2.0 s for one hand.
 - Each event reports **onset_frame** (behavior first appears), **alert_frame** (confirmed after the minimum duration) and **end_frame**.
-- Default `WHEEL` polygon (video 1 only, 1920x1536): (1330,1250),(1450,1130),(1600,1060),(1740,1060),(1790,1180),(1760,1380),(1650,1500),(1450,1536),(1330,1450).
+- There is no default polygon: each camera setup requires a validated `wheel.json`.
 
 ## 6. Results on video 1 (900 frames at 30 fps)
 | Event | Onset | Alert | End |
@@ -62,8 +84,8 @@ Install: `python3 -m pip install ultralytics opencv-python numpy scipy`. Check `
 | PHONE_AT_EAR | 370 | 400 | 714 |
 
 ## 7. Known problems and limitations
-- **Wheel zone is a hard-coded polygon**, not a detection. On the second car it sat on the control panel and missed the top of the rim, so both hands on the wheel were reported as "one hand". Fix: per-camera `wheel.json` (manual `draw_wheel.py` or automatic `auto_wheel.py`).
-- `auto_wheel.py` is unvalidated. A single earlier YOLOE test (prompt "steering wheel", conf 0.05, one frame of video 1) returned **0 detections**. The model needs a ~570 MB text encoder (`mobileclip_blt.ts`) and `pip install git+https://github.com/ultralytics/CLIP.git`. OpenAI CLIP / HuggingFace hosts were blocked in the sandbox. Alternatives: fine-tune a wheel segmentation model on ~50-100 labeled frames, or keep manual calibration per vehicle (the wheel is fixed per mount).
+- **Wheel calibration must match the camera setup.** Rules and rendering now load per-camera `wheel.json`; same-resolution calibration from another camera still requires operator verification.
+- Automatic wheel segmentation has only limited clip-level validation. The model needs a ~570 MB text encoder (`mobileclip_blt.ts`) and `pip install git+https://github.com/ultralytics/CLIP.git`. Earlier environments blocked those downloads; the local Windows test succeeded. Alternatives for difficult cameras: fine-tune a wheel segmentation model on labeled frames, or use validated manual calibration per vehicle (the wheel is fixed per mount).
 - The generic phone detector **missed the dark phone in the lap** (dark phone, dark hoodie, even at conf 0.03). Needs a fine-tuned phone detector on this camera's images.
 - **Missed event:** around frames 720-750 the driver holds the phone out in front of him; nothing flagged.
 - Thresholds were tuned on a single clip and need re-tuning on more drivers.

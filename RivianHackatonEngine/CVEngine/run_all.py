@@ -1,6 +1,7 @@
 """Runs the whole pipeline on one video: wheel zone -> pose/phone extraction -> rules -> annotated video.
 Usage: python3 run_all.py my_video.mp4 [out_dir]
-- If out_dir/wheel.json already exists it is reused (delete it, or re-draw it with draw_wheel.py, to change the zone).
+- If out_dir/wheel.json already exists it is reused; delete it to recalibrate for a new camera setup.
+- Rules and rendering require this calibration. Re-run rules after changing it.
 - Results (events.csv, frame_flags.csv, annotated.mp4, key_*.jpg) end up in out_dir.
 """
 import os, subprocess, sys
@@ -20,7 +21,8 @@ def run(script, *args):
 if os.path.exists(WHEEL):
     print('Reusing existing', WHEEL)
 elif run('auto_wheel.py', VIDEO, WHEEL) != 0:
-    sys.exit('\nAutomatic wheel detection failed. Draw the zone by hand:\n  python3 draw_wheel.py %s %s\nthen run this command again.' % (VIDEO, WHEEL))
+    sys.exit('\nAutomatic wheel detection failed. Check the errors above and retry, or supply '
+             'a validated wheel.json with wheel points and frame_size in %s.' % OUT)
 else:
     print('Check %s before trusting the result.' % os.path.join(OUT, 'wheel_preview.jpg'))
 
