@@ -1,7 +1,7 @@
 # Frontend Specification: Driving Score Car App (Android Automotive)
 
 > Status: Draft v1.0 (2026-11-06) · Scope: Hackathon MVP, built to be close to production quality
-> Companion document: [`backend_specification.md`](backend_specification.md) (FastAPI + PostgreSQL)
+> Companion documents: [`../backend/backend_specification.md`](../backend/backend_specification.md) (FastAPI + PostgreSQL) · [`../simulated_game_engine/simulated_game_engine_specification.md`](../simulated_game_engine/simulated_game_engine_specification.md) (engine bridge + simulator)
 
 ---
 
@@ -36,7 +36,7 @@ A **Kotlin app for Android Automotive OS (AAOS)** that runs on the car's head-un
                  └──────────────────┘
 ```
 
-The engine logic (scoring and alert escalation) lives in `RivianHackatonEngine/` and belongs to the engine team. Detection (the driver-monitoring camera and wheel sensors) is **outside this spec**. This document defines the **WebSocket contract** between the app and the engine (§8), and the **bridge/simulator** `simulated_game_engine/`, which wraps the real engine and generates simulated driver events (§15.3).
+The engine logic (scoring and alert escalation) lives in `RivianHackatonEngine/` and belongs to the engine team. Detection (the driver-monitoring camera and wheel sensors) is **outside this spec**. This document defines the **WebSocket contract** between the app and the engine (§8), and the **bridge/simulator** `simulated_game_engine/`, which wraps the real engine and generates simulated driver events (its own spec, linked in §15.3).
 
 ---
 
@@ -63,7 +63,7 @@ The engine logic (scoring and alert escalation) lives in `RivianHackatonEngine/`
 
 | Concern | Choice |
 |---|---|
-| OS | **Android Automotive OS**. `minSdk 29` (Android 10), `targetSdk 35`. Tested on the AAOS emulator (API 33/34 "Automotive with Play Store" image). |
+| OS | **Android Automotive OS**. `minSdk 29` (Android 10), `targetSdk 35`, `compileSdk 37` (needed by current AndroidX). Tested on the AAOS emulator (API 33/34 "Automotive" image). |
 | Manifest requirements | `<uses-feature android:name="android.hardware.type.automotive" android:required="true"/>`, `useLibrary 'android.car'` (or `androidx.car.app:app-automotive` not needed, since a full custom UI is used) |
 | Language | **Kotlin 2.x**, coroutines + Flow |
 | UI | **Jetpack Compose** (Material 3, custom car theme), single-Activity, **Navigation Compose** |
@@ -232,7 +232,7 @@ The first step is a choice: **"I have an account"** or **"Create account"**.
    - **Username**: 3–32 characters, `[a-z0-9_.]`, lowercased as typed. Validated inline.
    - **Display name**: 1–40 characters.
    - **Password** and **Confirm password**: minimum 8 characters, with a show/hide toggle.
-   - **Region**: a searchable country picker (`GET /meta/regions`, or the bundled list as fallback). Defaults to the system locale's country.
+   - **Region**: a searchable country picker (`GET /meta/regions`, or, as the offline fallback, the platform's ISO 3166-1 list from `Locale.getISOCountries()` with localized names). Defaults to the system locale's country.
    - **Avatar color**: a pick from 8 preset colors.
    - Email: **not asked for on the car** (optional, for the phone app later).
 2. "Create account" → `POST /cars/me/drivers/register`. Server errors are mapped to their fields (for example `USERNAME_TAKEN` → "This username is taken" under Username).
@@ -257,7 +257,7 @@ Other rules:
 
 ### 7.1 Principles
 - While moving, the app shows **only** the Drive screen, the Result screen (read-only, no navigation), and alerts. No text input, no scrolling lists.
-- Large text (body ≥ 24 sp, titles ≥ 32 sp, numbers ≥ 48 sp), touch targets ≥ **76 dp**, high contrast (WCAG AA minimum), dark theme for night. Light theme follows the system day/night mode.
+- Large text (body ≥ 24 sp, titles ≥ 32 sp, numbers ≥ 48 sp), touch targets ≥ **76 dp**, high contrast (WCAG AA minimum), dark theme for night. Light theme follows the system day/night mode (**MVP: dark theme only**; the light variant is future work).
 - Alerts never require a tap to dismiss.
 
 ### 7.2 Driving state
@@ -309,7 +309,7 @@ Other rules:
 - The emulator connects to the bridge on the host at `ws://10.0.2.2:8765/ws`.
 - OkHttp `pingInterval = 10 s`. A missing pong → reconnect.
 - Reconnect with **exponential backoff**: 0.5, 1, 2, 4, 8 s, capped at 15 s, with ±20% jitter. Retries continue indefinitely while the foreground service runs.
-- The connection is owned by the **foreground service** (`EngineConnectionService`, type `connectedDevice` or `specialUse`). It stays up while the app is in the background (for example while navigation is in the foreground).
+- The connection is owned by the **foreground service** (`EngineConnectionService`, type `specialUse`). It stays up while the app is in the background (for example while navigation is in the foreground).
 
 ### 8.2 Envelope
 
@@ -346,7 +346,7 @@ Other rules:
 ### 8.4 Reliability rules
 1. **Session resumption:** after a reconnect during `SESSION_ACTIVE`, the app sends `hello` and then re-sends `session.start` with the **same** `session_id`. The engine must continue the existing session, not restart it.
 2. **Session mismatch:** if the engine's `hello.active_session_id` differs from the app's, the app sends `session.end` (reason `DRIVER_SWITCH`) for the engine's session, then `session.start` for its own.
-3. **At-least-once results:** the engine keeps each `drive.result` until it receives `drive.result.ack`. On every reconnect it re-sends any unacked results. The app de-duplicates by `session_id` (Room primary key).
+3. **At-least-once results:** the engine keeps each `drive.result` until it receives `drive.result.ack`. On every reconnect it re-sends any unacked results. The app de-duplicates by `session_id` (Room primary key). If persisting fails (e.g. a database error), the app does **not** ack, so the engine re-delivers.
 4. A result whose `session_id` matches no session the app knows is still persisted, attributed via its `user_id` (included in the payload). If that user has no profile on this car, it is dropped with an error log.
 5. Alerts are **fire-and-forget**. If the connection is lost, alerts that were showing are auto-cleared after their `ttl_s` (default 10 s).
 
@@ -385,7 +385,7 @@ This is identical to the backend upload body (backend spec §8.6), minus `id`, p
 | `events[]` | `occurrences` that were **penalized** (above the grace period, consistent with `count`), times converted to wall clock |
 | `extra.penalties` | `ActionSummary.penalty` per type |
 
-**Mistake types.** The canonical names (shared with the backend) are `EYES_OFF_ROAD`, `PHONE_USE`, `EYES_CLOSED`, `YAWN`, `HANDS_OFF_WHEEL`, `PHONE_CALL`, `EATING_DRINKING`, `SMOKING`. The engine's action keys are their **lower-case** forms (`eyes_off_road`, `phone_call`, …). Today the engine configures only `phone_call` and `eyes_off_road`; the rest arrive as the engine team adds them. The app **upper-cases every incoming type** and accepts any `^[A-Z][A-Z0-9_]{1,39}$` value.
+**Mistake types.** The canonical names (shared with the backend) are `EYES_OFF_ROAD`, `PHONE_USE`, `EYES_CLOSED`, `YAWN`, `HANDS_OFF_WHEEL`, `PHONE_CALL`, `EATING_DRINKING`, `SMOKING`. The engine's action keys are their **lower-case** forms (`eyes_off_road`, `phone_call`, …). Today the engine configures only `phone_call` and `eyes_off_road`; the rest arrive as the engine team adds them. The app **upper-cases every incoming type** and accepts any `^[A-Z][A-Z0-9_]{1,39}$` value. Before storing, it normalizes the raw payload it will later upload: types are upper-cased, entries whose type doesn't match the pattern are dropped (logged), and duplicate mistake types are merged (counts and total durations summed, max of max). Unknown fields such as `extra` are kept.
 
 Validation in the app, before persisting (invalid → log, then ack anyway so the engine doesn't loop, and show "Result invalid"): `0 ≤ score ≤ 100`, `ended_at ≥ started_at`, counts ≥ 0.
 
@@ -416,9 +416,9 @@ The severity is **never** decided by the app. It always uses the engine's `level
 | Level | Visual | Sound | TTS | Display time |
 |---|---|---|---|---|
 | `VISUAL` | Amber top banner (≥ 120 dp, icon + text ≥ 32 sp) | none | no | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
-| `AUDIO` | Amber top banner | short chime (`chime_warning.ogg`) | yes, once | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
+| `AUDIO` | Amber top banner | short chime (`res/raw/chime_warning`) | yes, once | until `alert.clear`, min 2 s, max `ttl_s` (default 8 s) |
 | `HAPTIC` | **Red** top banner, pulsing | double chime | yes, once | until `alert.clear`, max `ttl_s` (default 10 s) |
-| `CRITICAL` | Full-screen red pulsing overlay | repeating alarm tone (`alarm_critical.ogg`) every 2 s | yes, repeated every 6 s | until `alert.clear`, max `ttl_s` (default 15 s) |
+| `CRITICAL` | Full-screen red pulsing overlay | repeating alarm tone (`res/raw/alarm_critical`) every 2 s | yes, repeated every 6 s | until `alert.clear`, max `ttl_s` (default 15 s) |
 
 - **`HAPTIC` vibration:** the app has no access to seat or steering-wheel vibration on AAOS. For the MVP, `HAPTIC` is shown as the escalated red banner + sound. Real haptics (via a vehicle API, if the OEM exposes one) are future work.
 
@@ -462,7 +462,7 @@ The severity is **never** decided by the app. It always uses the engine's `level
 | 6, 7, 8, 9 | Locked for 1, 2, 5, 15 min |
 | 10 | **PIN disabled.** The driver must sign in with their password (online) and set a new PIN. |
 
-- The counter resets on success. Lockout end times are stored as wall-clock time **and** checked against `SystemClock.elapsedRealtime()` since boot, so changing the clock doesn't bypass a lockout.
+- The counter resets on success. Lockout end times are stored as wall-clock time **and** checked against `SystemClock.elapsedRealtime()` since boot, so changing the clock doesn't bypass a lockout. The remaining time is the larger of the two, capped at that lockout's duration (so moving the clock back can't inflate it). After a reboot `elapsedRealtime` restarts, so only the wall-clock part applies.
 - "Forgot PIN" = password login on this car via `POST /cars/me/drivers` (which re-links) → set a new PIN.
 
 ### 10.5 Removing a driver
@@ -489,7 +489,8 @@ data class DriverProfileEntity(
     val pinDisabled: Boolean = false,
     val addedAt: Long,
     val lastUsedAt: Long?,
-    val pendingUnlink: Boolean = false       // DELETE queued while offline
+    val pendingUnlink: Boolean = false,      // DELETE queued while offline
+    val needsReauth: Boolean = false         // 403 DRIVER_NOT_LINKED: "Sign in again to upload" (§11.3)
 )
 
 @Entity(tableName = "drives", indices = [Index("userId"), Index("syncState")])
@@ -497,6 +498,7 @@ data class DriveEntity(
     @PrimaryKey val id: String,              // = session_id
     val userId: String,
     val carId: String,
+    val carName: String?,                    // from the server list (other cars), for History
     val startedAt: Long, val endedAt: Long,
     val durationS: Int,
     val distanceKm: Double?,                 // reserved, always null today
@@ -507,7 +509,9 @@ data class DriveEntity(
     val syncState: SyncState,                // PENDING | SYNCING | SYNCED | FAILED_PERMANENT
     val syncAttempts: Int = 0,
     val lastSyncError: String? = null,
-    val createdAt: Long
+    val createdAt: Long,
+    val detailLoaded: Boolean = true,        // REMOTE list items: mistakes/events fetched yet?
+    val mistakeTotal: Int? = null            // REMOTE list items: mistakes_summary.total_count
 )
 
 @Entity(tableName = "drive_mistakes", primaryKeys = ["driveId", "type"])
@@ -542,7 +546,8 @@ DataStore holds: `car_id`, `car_name`, active session (`session_id`, `user_id`, 
 | 409 `DRIVE_CONFLICT`, 422 | `FAILED_PERMANENT` (shown in history with an error icon and a "Details" option). Logged. |
 | 403 `DRIVER_NOT_LINKED` | Keep `PENDING` and mark the profile "Sign in again to upload" (the driver was revoked remotely). Re-linking via password resumes uploads. |
 | 401 / 403 `CAR_REVOKED` | Stop. The car must re-register (shown in debug settings). Drives are kept. |
-| 5xx / network | `Result.retry()`, with WorkManager exponential backoff starting at 30 s |
+| 5xx, 408, 429 / network | `Result.retry()`, with WorkManager exponential backoff starting at 30 s |
+| Other 4xx (400, 403 `FORBIDDEN`, 404, 413) | `FAILED_PERMANENT` (a retry can't succeed) |
 
 - Also runs as **periodic work** every 30 min, and when connectivity changes to online.
 - A queued `pendingUnlink` → `DELETE /cars/me/drivers/{id}` runs in the same worker before cleanup.
@@ -564,7 +569,7 @@ DataStore holds: `car_id`, `car_name`, active session (`session_id`, `user_id`, 
 |---|---|
 | Car registration | `POST /api/v1/cars/register` |
 | Add driver / Forgot PIN | `POST /api/v1/cars/me/drivers` |
-| Create account | `POST /api/v1/cars/me/drivers/register`, with `GET /api/v1/meta/regions` for the region picker (a static list is bundled as fallback) |
+| Create account | `POST /api/v1/cars/me/drivers/register`, with `GET /api/v1/meta/regions` for the region picker (fallback: the platform's ISO country list) |
 | Remove driver | `DELETE /api/v1/cars/me/drivers/{user_id}` |
 | Refresh profile data | `GET /api/v1/users/me` (driver-scoped). Run on unlock when online, to update display name, region, and color. |
 | Upload drive | `POST /api/v1/drives` |
@@ -582,12 +587,11 @@ Connectivity is observed with `ConnectivityManager.NetworkCallback` → `StateFl
 **Repository layout** (monorepo):
 ```
 RIVIAN_hackathon/
-├── backend/                  # FastAPI + PostgreSQL (backend_specification.md)
-├── car_frontend/             # This Android Automotive app (Gradle project root)
-├── simulated_game_engine/    # WebSocket bridge around the real engine + driver-event simulator (§15.3)
-├── RivianHackatonEngine/     # Real Game + Alert engine library (engine team; do not modify)
-├── frontend_specification.md
-└── backend_specification.md
+├── backend/                  # FastAPI + PostgreSQL (backend/backend_specification.md)
+├── car_frontend/             # This Android Automotive app (Gradle project root; car_frontend/frontend_specification.md)
+├── simulated_game_engine/    # WebSocket bridge around the real engine + driver-event simulator
+│                             #   (simulated_game_engine/simulated_game_engine_specification.md)
+└── RivianHackatonEngine/     # Real Game + Alert engine library (engine team; do not modify)
 ```
 
 **Inside `car_frontend/`:**
@@ -655,46 +659,7 @@ For the hackathon, the modules may be collapsed into packages of a single `:app`
 - An implementation of the `EngineGateway` facade that needs no network: it emits random alerts every 20–60 s during a session and produces a randomized `drive.result` on `session.end`.
 
 ### 15.3 Simulated engine / engine bridge (`simulated_game_engine/`)
-A standalone **Python 3.12** project in the top-level folder `simulated_game_engine/`. It has two jobs:
-1. **Bridge:** wrap the real engine library (`SafetySystem` from `RivianHackatonEngine/main.py`) and serve the §8 WebSocket protocol to the car app.
-2. **Simulator:** stand in for the camera/sensor detection layer by generating **driver-action events** (`on_event(action, is_active)`) from a CLI, random auto mode, or scripted scenarios.
-
-Scores and alerts therefore come from the **real** engine logic. When real detection exists later, only the event source changes.
-
-**Rules (from `RULES.md`):**
-- `RivianHackatonEngine/` is **imported, never modified**. Add its path to `sys.path` (`--engine-path`, default `../RivianHackatonEngine`), because its modules use top-level imports (`from AlertEngine.AlertEngine import …`).
-- Anything the bridge needs changed in the engine goes into `requested_changes.md` (see the list at the end of this section).
-
-**Stack:** `websockets` (asyncio), `pydantic` for message models, `prompt_toolkit` (or plain `aioconsole`) for the CLI. Run with `python -m simulated_game_engine` (or `uv run`). Options: `--host 0.0.0.0 --port 8765 --engine-path ../RivianHackatonEngine --tick-ms 100`.
-
-**Bridge behavior:**
-- **Protocol:** implements every message in §8.3 and all reliability rules in §8.4: idempotent `session.start`, `hello` with `active_session_id` and `supported_actions` (= the keys of the engine's configs, upper-cased), session resumption after reconnect, and keeping and re-sending unacked `drive.result` messages.
-- **Session:** `session.start` → `SafetySystem.start_drive(t)`. `session.end` (or CLI `end`) → `end_drive(t)` → map `DriveReport` → `drive.result` (mapping table in §8.5).
-- **Clock:** the bridge passes its own `time.monotonic()` values as `timestamp` to the engine. At session start it records `(wall_start, mono_start)` and converts any engine time `t` to wall clock as `wall_start + (t - mono_start)`.
-- **Events:** each simulated event calls `on_event(action_lowercase, is_active, t)`. If it returns an `Alert`, the bridge sends `alert`.
-- **Ticker:** every `--tick-ms` it calls `tick(t)`, so alerts escalate while an action continues. A returned `Alert` is sent as `alert`.
-- **Alert IDs:** the engine has no IDs. The bridge keeps `action → alert_id`: a new UUID when an action starts (the first alert for it), reused for every escalation of that occurrence. When the action ends (`is_active=False`), the bridge sends `alert.clear` for that ID and forgets it. At session end it clears all IDs.
-- **Mapping `Alert` → `alert`:** `type = action.upper()`, `level = alert.level.name`, `message = alert.message`, `duration_so_far_s = alert.duration_so_far`, `started_at` = the occurrence start converted to wall clock.
-- Actions the engine doesn't configure are still forwarded to `on_event` (the engine ignores them). The CLI prints a warning so the operator knows nothing will happen.
-
-**Simulator inputs (CLI commands):**
-- `status`: connection, active session, active actions, configured actions.
-- `start <action>` / `stop <action>`: begin or end a continuous action (for example `start phone_call`).
-- `pulse <action> <seconds>`: start now and stop automatically after N seconds.
-- `auto on|off`: random driver behavior during a session. Every 15–45 s it picks a configured action and holds it for 0.5–7 s, so you see escalations and clears.
-- `scenario demo`: a scripted ~2-minute drive: a short phone call (VISUAL → AUDIO), eyes off road for 5 s (AUDIO → HAPTIC → CRITICAL), a clean stretch, then `end`.
-- `end`: end the drive and send `drive.result`.
-- `drop`: close the connection, to test reconnects. `quit`.
-
-**Tests:** pytest for the protocol state machine (resume, re-delivery, idempotency), the `DriveReport` → `drive.result` mapping, alert-ID assignment and clears, and the clock conversion. Tests use the real `SafetySystem` with explicit timestamps.
-
-**README:** run instructions, including the emulator note: the app connects to `ws://10.0.2.2:8765/ws`.
-
-**Changes to request from the engine team** (in `requested_changes.md`, not done by the bridge):
-1. `AlertEngine.tick()` returns only the single most severe alert when several actions escalate in the same tick, so the others are lost. Ask for it to return all of them (or add a public `evaluate(action, ts)`).
-2. Use the canonical action keys for new actions: `eyes_closed`, `yawn`, `hands_off_wheel`, `phone_use`, `eating_drinking`, `smoking`. These map 1:1 to the shared mistake types.
-3. Optional: emit an explicit clear signal from `AlertEngine` (their current TODO). The bridge already derives clears from `is_active=False`.
-4. Optional: expose an engine version string (`__version__`), so `drive.result.engine_version` is meaningful.
+The bridge that wraps the real `SafetySystem` and serves the §8 protocol, plus the driver-event simulator (CLI, auto mode, `scenario demo`), is specified in its own document: [`../simulated_game_engine/simulated_game_engine_specification.md`](../simulated_game_engine/simulated_game_engine_specification.md). §8 here remains the source of truth for the wire protocol.
 
 ---
 

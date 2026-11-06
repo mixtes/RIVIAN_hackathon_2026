@@ -1,0 +1,154 @@
+package com.hackathon.drivescore.feature.stats
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import com.hackathon.drivescore.R
+import com.hackathon.drivescore.core.common.Clock
+import com.hackathon.drivescore.core.common.Formatters
+import com.hackathon.drivescore.core.designsystem.Banner
+import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.KpiTile
+import com.hackathon.drivescore.core.designsystem.MistakeBars
+import com.hackathon.drivescore.core.designsystem.SectionCard
+import com.hackathon.drivescore.core.designsystem.TrendChart
+import com.hackathon.drivescore.core.designsystem.TrendPoint
+import com.hackathon.drivescore.core.designsystem.VSpace
+import com.hackathon.drivescore.core.model.Period
+import com.hackathon.drivescore.core.network.ConnectivityMonitor
+import com.hackathon.drivescore.core.network.RankDto
+import com.hackathon.drivescore.core.network.StatsDto
+import com.hackathon.drivescore.data.DriverRepository
+import com.hackathon.drivescore.data.StatsRepository
+import com.hackathon.drivescore.service.SessionManager
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+enum class StatsSource { CACHE, LOCAL_ONLY, NONE }
+
+data class StatsUi(
+    val period: Period = Period.WEEK,
+    val stats: StatsDto? = null,
+    val fetchedAt: Long? = null,
+    val source: StatsSource = StatsSource.NONE,
+    val online: Boolean = true,
+    val regionCode: String = "",
+)
+
+@OptIn(ExperimentalCoroutinesApi::class)
+@HiltViewModel
+class StatsViewModel @Inject constructor(
+    private val repo: StatsRepository,
+    session: SessionManager,
+    private val connectivity: ConnectivityMonitor,
+    private val drivers: DriverRepository,
+    val clock: Clock,
+) : ViewModel() {
+    private val userId = session.state.value.unlockedUserId
+    private val period = MutableStateFlow(Period.WEEK)
+
+    /** Cache first, then network (stale-while-revalidate); offline + no cache → local, this car only (spec §6.7). */
+    val ui: StateFlow<StatsUi> = period.flatMapLatest { p ->
+        flow {
+            val id = userId ?: return@flow
+            val region = drivers.get(id)?.regionCode ?: ""
+            viewModelScope.launch { repo.refresh(id, p) }
+            repo.observe(id, p).collect { cached ->
+                if (cached != null) {
+                    emit(StatsUi(p, cached.value, cached.fetchedAt, StatsSource.CACHE, connectivity.online.value, region))
+                } else if (!connectivity.online.value) {
+                    emit(StatsUi(p, repo.localStats(id, p), null, StatsSource.LOCAL_ONLY, false, region))
+                } else {
+                    emit(StatsUi(p, null, null, StatsSource.NONE, true, region))
+                }
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatsUi())
+
+    fun select(p: Period) { period.value = p }
+}
+
+@Composable
+fun StatsScreen(vm: StatsViewModel = hiltViewModel()) {
+    val ui by vm.ui.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())) {
+        Text(stringResource(R.string.nav_stats), style = MaterialTheme.typography.headlineLarge)
+        VSpace(12.dp)
+        PeriodTabs(ui.period, vm::select)
+        VSpace(12.dp)
+        when {
+            ui.source == StatsSource.LOCAL_ONLY -> Banner(stringResource(R.string.offline_this_car_only))
+            !ui.online && ui.fetchedAt != null -> Banner(stringResource(R.string.last_updated, Formatters.minutesAgo(ui.fetchedAt!!, vm.clock.nowMs())))
+        }
+        val s = ui.stats ?: run { Text(stringResource(R.string.loading), style = MaterialTheme.typography.bodyLarge); return }
+        VSpace(12.dp)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            KpiTile(stringResource(R.string.weighted_score), s.weightedScore?.let { Formatters.score(it) } ?: "–", Modifier.weight(1.4f),
+                valueColor = s.weightedScore?.let { CarColors.score(it) } ?: CarColors.OnDark, big = true)
+            KpiTile(stringResource(R.string.drives), s.driveCount.toString(), Modifier.weight(1f))
+            KpiTile(stringResource(R.string.driving_time), Formatters.drivingTime(s.totalDurationS), Modifier.weight(1f))
+            KpiTile(stringResource(R.string.best_score), s.bestScore?.let { Formatters.score(it) } ?: "–", Modifier.weight(1f))
+        }
+        s.rank?.let { r ->
+            VSpace(16.dp)
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                RankTile(r.region, "${Formatters.flagEmoji(r.region?.code ?: ui.regionCode)} ${r.region?.code ?: ui.regionCode}", Modifier.weight(1f))
+                RankTile(r.global, stringResource(R.string.global), Modifier.weight(1f))
+            }
+        }
+        if (s.series.isNotEmpty()) {
+            VSpace(16.dp)
+            SectionCard(Modifier.fillMaxWidth()) {
+                Column {
+                    Text(stringResource(R.string.trend), style = MaterialTheme.typography.titleMedium)
+                    VSpace(8.dp)
+                    TrendChart(s.series.map { TrendPoint(it.weightedScore, it.driveCount) })
+                }
+            }
+        }
+        if (s.mistakes.isNotEmpty()) {
+            VSpace(16.dp)
+            SectionCard(Modifier.fillMaxWidth()) {
+                Column {
+                    Text(stringResource(R.string.mistake_breakdown), style = MaterialTheme.typography.titleMedium)
+                    MistakeBars(s.mistakes.sortedByDescending { it.count }.map { Triple(it.type, it.count, it.perHour) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RankTile(r: RankDto?, scope: String, modifier: Modifier) {
+    val text = when {
+        r == null -> "–"
+        r.qualified && r.rank != null -> stringResource(R.string.rank_of, r.rank, "%,d".format(r.totalRanked), scope)
+        r.minutesNeeded != null -> stringResource(R.string.drive_more_to_qualify, r.minutesNeeded)
+        else -> stringResource(R.string.not_ranked_yet_scope, scope)
+    }
+    SectionCard(modifier) { Text(text, style = MaterialTheme.typography.titleLarge) }
+}

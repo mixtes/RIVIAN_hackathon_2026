@@ -1,7 +1,7 @@
 # Backend Specification: Driving Score Platform
 
-> Status: Draft v1.0 (2026-11-06) · Scope: Hackathon MVP, built to be close to production quality
-> Companion document: [`frontend_specification.md`](frontend_specification.md) (Android Automotive car app)
+> Status: v1.1 (2026-11-06), **implemented** in this folder (see `README.md`). §17 lists the decisions made during implementation. · Scope: Hackathon MVP, built to be close to production quality
+> Companion document: [`../car_frontend/frontend_specification.md`](../car_frontend/frontend_specification.md) (Android Automotive car app)
 
 ---
 
@@ -348,10 +348,12 @@ Every error response has this shape:
 |---|---|
 | 400 | `BAD_REQUEST` |
 | 401 | `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `TOKEN_EXPIRED`, `TOKEN_REUSED` |
-| 403 | `DRIVER_NOT_LINKED`, `CAR_REVOKED`, `FORBIDDEN` |
+| 403 | `DRIVER_NOT_LINKED`, `CAR_REVOKED`, `FORBIDDEN` (e.g. a car token on a user-only endpoint, or the reverse) |
 | 404 | `NOT_FOUND` |
-| 409 | `USERNAME_TAKEN`, `EMAIL_TAKEN`, `DRIVE_CONFLICT` |
+| 409 | `USERNAME_TAKEN`, `EMAIL_TAKEN`, `DRIVE_CONFLICT`, `CAR_DRIVER_LIMIT`, `VIN_TAKEN` |
+| 413 | `PAYLOAD_TOO_LARGE` (body > 1 MB) |
 | 422 | `VALIDATION_ERROR` (Pydantic errors mapped to `details`) |
+| 429 | `TOO_MANY_ATTEMPTS` (with a `Retry-After` header) |
 | 500 | `INTERNAL_ERROR` |
 
 Every response carries an `X-Request-Id` header. If the client sent one, the same value is echoed back.
@@ -399,7 +401,13 @@ Every response carries an `X-Request-Id` header. If the client sent one, the sam
 
 **`POST /api/v1/auth/refresh`** `{ "refresh_token": "…" }` → `200 TokenPair`
 
-**`POST /api/v1/auth/logout`** `{ "refresh_token": "…" }` → `204`
+**`POST /api/v1/auth/logout`** (User auth) `{ "refresh_token": "…" }` → `204`. Revokes that token's family if it belongs to the caller. Unknown tokens are ignored (still `204`).
+
+**`PUT /api/v1/users/me/password`** `{ "current_password": "…", "new_password": "…" }` → `204`. A wrong current password → `401 INVALID_CREDENTIALS`. On success, **all** of the user's refresh tokens are revoked.
+
+**`PATCH /api/v1/users/me`** accepts any subset of `display_name`, `region_code`, `avatar_color`, `leaderboard_visible`. Unknown fields or `null` values → `422`. Any change clears the leaderboard cache.
+
+**`GET /api/v1/users/me/cars`** → `[ { "car_id", "name", "model", "linked_at", "last_used_at" } ]` (active links only).
 
 ```json
 // TokenPair
@@ -443,7 +451,9 @@ Every response carries an `X-Request-Id` header. If the client sent one, the sam
 - Errors: `409 USERNAME_TAKEN` / `EMAIL_TAKEN`, `409 CAR_DRIVER_LIMIT` (checked **before** the user is created), `422 VALIDATION_ERROR`.
 - The created account is a normal account. The same username and password work later in the phone and iOS apps via `/auth/login`.
 
-**`DELETE /api/v1/cars/me/drivers/{user_id}`** → `204`. This sets `revoked_at`. Drives already uploaded are kept.
+**`DELETE /api/v1/cars/me/drivers/{user_id}`** → `204`. This sets `revoked_at`. Drives already uploaded are kept. It is idempotent: an already-revoked link also returns `204`, so queued offline unlinks can be retried safely. A user who was never linked → `404`.
+
+**`PATCH /api/v1/cars/me`** accepts `name`, `model`, `vin` and returns the same body as `GET /cars/me`. A VIN used by another car → `409 VIN_TAKEN`. VINs are upper-cased, 11–17 characters, `A-Z` (no I, O, Q) and `0-9`.
 
 **`GET /api/v1/cars/me`** → `{ "car_id", "name", "model", "vin", "drivers": [UserProfile + "linked_at", "last_used_at"] }`
 
@@ -474,7 +484,9 @@ The body is the Game engine's `drive.result` payload (frontend spec §8) **plus*
 ```
 
 Behavior:
-- `user_id` comes from `X-Driver-Id` and `car_id` comes from the car token. The client **never** sends them in the body.
+- `user_id` comes from `X-Driver-Id` and `car_id` comes from the car token. The body is never used as the source for them.
+- The car forwards the engine's `drive.result` verbatim, so the body may also contain `session_id` and `user_id`. They are accepted; if present, `session_id` must equal `id` and `user_id` must equal `X-Driver-Id` (else `422`). Unknown top-level fields are accepted and kept in `raw_payload`.
+- `raw_payload` is the **request body exactly as received**. "Identical payload" below means JSON-equal to the stored `raw_payload` (key order and whitespace don't matter).
 - **Idempotent on `id`:**
   - If no drive with this `id` exists, insert it → `201 Created` with a `Drive` body.
   - If a drive with this `id` exists with the same user, car, and an identical payload hash, return it → `200 OK`. The client treats this as success.
@@ -494,7 +506,7 @@ Behavior:
 | `distance_km` | optional. null, or 0 ≤ distance ≤ 2000. Stored, but not used in any calculation. |
 | `mistakes[].type` | `^[A-Z][A-Z0-9_]{1,39}$`. Unknown types are accepted and stored. |
 | `mistakes[].count` | integer 0–100000 |
-| `mistakes[].*_duration_s` | null, or 0 ≤ value ≤ drive duration |
+| `mistakes[].*_duration_s` | null, or 0 ≤ value ≤ drive duration (+1 s slack for rounding) |
 | `events` | ≤ 5000 items. Each `started_at` is within [started_at, ended_at + 1 min]. |
 | Body size | ≤ 1 MB |
 
@@ -546,11 +558,13 @@ The list is ordered by `ended_at DESC, id DESC`. The cursor is a base64url encod
 ```
 - `per_hour` = count ÷ (total_duration_s / 3600). It is `null` when the total driving time is 0.
 - `series` buckets follow §5.4. Empty buckets are **included** with zeros and nulls, so charts get a continuous x-axis. `generate_series` produces the buckets.
-- `rank` uses the same computation as the leaderboard (§9.2). If the user has not reached the period's minimum driving time, `qualified=false` and `rank=null`.
+- `rank` uses the same computation as the leaderboard (§9.2). If the user has not reached the period's minimum driving time, `qualified=false` and `rank=null`. A user with `leaderboard_visible=false` also gets `rank=null`.
+- `mistakes` lists only types with a total count > 0, sorted by count (descending). The engine reports zero-count types too; they are stored but not listed here.
+- The window is `[window_start, window_end)` on `ended_at`. For `period=all`, `window_start` is the month of the user's first drive (see §9.3).
 
 ### 8.9 Leaderboard
 
-**`GET /api/v1/leaderboards?period=month&region=RS&limit=50&offset=0`**. Set `region=GLOBAL` for everyone.
+**`GET /api/v1/leaderboards?period=month&region=RS&limit=50&offset=0`**. Set `region=GLOBAL` for everyone. `region` is case-insensitive and **defaults to the caller's home region**. `period` defaults to `week`. `limit` is 1–200 (default 50).
 ```json
 {
   "period": "month",
@@ -569,7 +583,8 @@ The list is ordered by `ended_at DESC, id DESC`. The cursor is a base64url encod
   "generated_at": "…"
 }
 ```
-- `me.rank` is `null` when the user is not qualified or has `leaderboard_visible=false`. When not qualified, `minutes_needed` shows how many more minutes the user must drive (rounded up).
+- `me.rank` is `null` when the user is not qualified, has `leaderboard_visible=false`, or isn't in the requested region. When not qualified, `minutes_needed` shows how many more minutes the user must drive (rounded up). `me.weighted_score` is the user's own weighted score in the window, ranked or not (`null` with no driving time).
+- `window_start` is `null` for `period=all`.
 - Leaderboard entries expose only `username`, `display_name`, and `avatar_color`. No car or drive data.
 
 **`GET /api/v1/meta/mistake-types`**
@@ -673,7 +688,11 @@ The `me` row is computed by the same CTE filtered to `user_id = :me`. When the u
 | `LEADERBOARD_CACHE_TTL_S` | `60` | |
 | `CORS_ORIGINS` | `` | Comma-separated |
 | `LOG_LEVEL` | `INFO` | |
-| `ENV` | `dev` | `dev` enables `/docs`. In `prod`, docs are behind a flag. |
+| `ENV` | `dev` | `dev` / `test` / `prod`. `prod` hides `/docs`, `/redoc` and `/openapi.json` unless `DOCS_ENABLED=true`, and sends HSTS. |
+| `DOCS_ENABLED` | `false` | Show the API docs in `prod` |
+| `ARGON2_TIME_COST` / `ARGON2_MEMORY_COST_KIB` / `ARGON2_PARALLELISM` | `3 / 65536 / 4` | Password hashing parameters (tests lower them) |
+| `LOGIN_MAX_FAILURES` / `LOGIN_FAILURE_WINDOW_MIN` / `LOGIN_LOCKOUT_MIN` | `10 / 15 / 15` | Basic brute-force protection (§10) |
+| `MAX_BODY_BYTES` | `1048576` | Request body limit |
 
 ---
 
@@ -685,24 +704,28 @@ services:
   db:
     image: postgres:16-alpine
     environment: { POSTGRES_USER: drive, POSTGRES_PASSWORD: drive, POSTGRES_DB: drive }
-    ports: ["5432:5432"]
+    ports: ["${DB_PORT:-5432}:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U drive"], interval: 5s, retries: 10 }
   api:
     build: .
     env_file: .env
+    environment: { DATABASE_URL: postgresql+asyncpg://drive:drive@db:5432/drive }
     depends_on: { db: { condition: service_healthy } }
-    ports: ["8000:8000"]
+    ports: ["${API_PORT:-8000}:8000"]
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 volumes: { pgdata: {} }
 ```
+- The image's own default command (outside compose) runs migrations, then Gunicorn with `uvicorn_worker.UvicornWorker` workers (`WEB_CONCURRENCY`, default 2).
 - The Android emulator reaches the host API at `http://10.0.2.2:8000`. A real head unit needs the host's LAN IP or a public deployment.
 - **Public demo deployment:** any container host (Fly.io, Render, Railway) with managed Postgres. No platform-specific code.
 
 ### 12.2 Seed data (`python -m scripts.seed`)
 - Creates about 40 users across 4 regions (`RS`, `US`, `DE`, `NO`), 3 cars, and about 2,000 drives spread over the last 400 days with realistic score distributions and mistakes. Every leaderboard period then has content for the demo.
 - Creates the known demo user `demo` / `demo-password-123` in region `RS`.
-- Idempotent. Drops and re-creates the seed rows with a fixed random seed.
+- Idempotent. Drops and re-creates the seed rows (fixed usernames and car IDs, plus all drives on the seed cars) with a fixed random seed. Car tokens are new on every run and printed.
+- Other seed users log in with `<username>` / `seed-password-123`. At most 8 links per car are active; the rest are stored as revoked (historic) links.
+- Run it with `python -m scripts.seed [--now <ISO-8601>] [--drives-per-user N]`.
 
 ---
 
@@ -754,3 +777,22 @@ Target: about 80% line coverage on `services/` and `repositories/`, and every en
 | 4 | Region granularity | Country (ISO alpha-2). | Is country enough? |
 | 5 | Score precision | Stored with 2 decimals, displayed as an integer. | Is the engine score an integer or a float? |
 | 6 | VIN | Optional. | Is the VIN available to the app on the target head unit? |
+
+---
+
+## 17. Implementation Notes (v1.1)
+
+These decisions were made while implementing, and the sections above have been updated to match:
+
+| Topic | Decision |
+|---|---|
+| Upload body | The car forwards the raw `drive.result`, so `session_id` and `user_id` may appear in the body. If present, they must match `id` and `X-Driver-Id`. Unknown fields are allowed and kept. `raw_payload` = the request body as received. |
+| Idempotency check | "Same payload" = JSON-equal to the stored `raw_payload`. No extra hash column. |
+| Unlink | `DELETE /cars/me/drivers/{id}` is idempotent (`204` when already revoked) and `404` only if the user was never linked. |
+| Leaderboard defaults | `region` defaults to the caller's home region. `period` defaults to `week`. |
+| New error codes | `CAR_DRIVER_LIMIT` and `VIN_TAKEN` (409), `PAYLOAD_TOO_LARGE` (413), `TOO_MANY_ATTEMPTS` (429). |
+| Zero-weight users | Users whose total driving time in the window is 0 are never ranked, even when `min_minutes` is 0. |
+| Stats mistakes | Only types with count > 0 are listed. |
+| `app.main:app` | Built lazily, so importing the module in tests needs no production environment variables. Tests use `create_app(settings, clock=…)`. |
+| Coverage | `coverage` runs with `concurrency = greenlet` (SQLAlchemy's asyncio layer runs in greenlets). |
+| Compose ports | Host ports are configurable (`DB_PORT`, `API_PORT`) for machines that already run Postgres on 5432. |

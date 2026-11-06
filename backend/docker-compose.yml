@@ -1,0 +1,18 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: drive, POSTGRES_PASSWORD: drive, POSTGRES_DB: drive }
+    # Host port is configurable in case a local Postgres already uses 5432 (e.g. DB_PORT=55432).
+    ports: ["${DB_PORT:-5432}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U drive"], interval: 5s, retries: 10 }
+  api:
+    build: .
+    env_file: .env
+    environment:
+      # Inside compose the database is always the `db` service, whatever .env says.
+      DATABASE_URL: postgresql+asyncpg://drive:drive@db:5432/drive
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["${API_PORT:-8000}:8000"]
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+volumes: { pgdata: {} }
