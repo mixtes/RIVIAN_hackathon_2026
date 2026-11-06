@@ -63,7 +63,7 @@ async def test_demo_scenario_sequence(core, clock, speed) -> None:
     assert len(of_type(ft.sent, p.ALERT_CLEAR)) == 2
     assert ft.sent[-1]["type"] == p.DRIVE_RESULT
     result = ft.sent[-1]["payload"]
-    counts = {m["type"]: m["count"] for m in result["mistakes"]}
+    counts = {m["type"]: m["count"] for m in result["mistakes"] if m["count"]}
     assert counts == {"PHONE_CALL": 1, "EYES_OFF_ROAD": 1}
     assert 0 < result["score"] < 100
     assert core.session is None
@@ -121,4 +121,4 @@ async def test_auto_mode_generates_actions(core, clock) -> None:
     assert not sim.auto_enabled
     assert len(of_type(ft.sent, p.ALERT_CLEAR)) >= 2
     assert {m["payload"]["type"] for m in of_type(ft.sent, p.ALERT)} <= {
-        "PHONE_CALL", "EYES_OFF_ROAD"}
+        a.upper() for a in core.configured_actions}

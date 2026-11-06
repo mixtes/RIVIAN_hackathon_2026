@@ -6,23 +6,26 @@ real-time output. It records every dangerous action (how many times it
 happened and how long it lasted) and, when the drive ends, returns a
 DriveReport with a safety score.
 
-Input  (per event): action name, is_active (started / still going) or ended,
-                    timestamp in seconds.
+Input  (per event): event_id, action name, is_active (True/False) timestamp in seconds or frames.
 Output (end of drive): DriveReport with score and per-action breakdown.
 
 Usage:
     game = GameEngine()
     game.start_drive(timestamp=0.0)
-    game.process_event("phone_call", is_active=True, timestamp=10.0)
-    game.process_event("phone_call", is_active=False, timestamp=15.0)
-    report = game.end_drive(timestamp=600.0)
+    game.process_event("PHONE_CALL", is_active=True, timestamp=10.0)
+    game.process_event("PHONE_CALL", is_active=False, timestamp=15.0)
+    report = game.end_drive(timestamp=30.0)
 """
 
 from __future__ import annotations
 
+import csv
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
+
+TRUE_VALUES = {"1", "true", "t", "yes", "y"}
 
 
 # ---------------------------------------------------------------------------
@@ -41,19 +44,76 @@ class ActionScoreConfig:
 MAX_SCORE = 100.0
 MIN_SCORE = 0.0
 
-# TODO: define real actions and their scores.
+def normalize_action(action: str) -> str:
+    """Canonical form of an action name: stripped and upper-case."""
+    return action.strip().upper()
+
+
+def load_events_from_csv(path: str) -> List[dict]:
+    """Read events from a CSV with columns: event_id, action, is_active, timestamp."""
+    events = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            events.append({
+                "event_id": row["event_id"],
+                "action": row["action"],
+                "is_active": row["is_active"].strip().lower() in TRUE_VALUES,
+                "timestamp": float(row["timestamp"]),
+            })
+    return events
+
+
+# Keys are the canonical UPPER-case action names, identical to the
+# backend/app mistake types (e.g. "PHONE_CALL").
+# TODO: tune scores.
 DEFAULT_SCORE_CONFIG: Dict[str, ActionScoreConfig] = {
-    "phone_call": ActionScoreConfig(
-        penalty_per_occurrence=5.0,
+    "PHONE_CALL": ActionScoreConfig(
+        penalty_per_occurrence=1.0,
         penalty_per_second=0.5,
         grace_seconds=1.0,
-        max_penalty_per_occurrence=20.0,
+        max_penalty_per_occurrence=10.0,
     ),
-    "eyes_off_road": ActionScoreConfig(
-        penalty_per_occurrence=3.0,
+    "EYES_OFF_ROAD": ActionScoreConfig(
+        penalty_per_occurrence=1.0,
         penalty_per_second=1.0,
         grace_seconds=0.5,
+        max_penalty_per_occurrence=10.0,
+    ),
+    "EYES_CLOSED": ActionScoreConfig(
+        penalty_per_occurrence=2.0,
+        penalty_per_second=2.0,
+        grace_seconds=0.5,
         max_penalty_per_occurrence=15.0,
+    ),
+    "YAWN": ActionScoreConfig(
+        penalty_per_occurrence=0.5,
+        penalty_per_second=0.0,
+        grace_seconds=0.0,
+        max_penalty_per_occurrence=0.5,
+    ),
+    "HANDS_OFF_WHEEL": ActionScoreConfig(
+        penalty_per_occurrence=1.0,
+        penalty_per_second=1.0,
+        grace_seconds=0.5,
+        max_penalty_per_occurrence=10.0,
+    ),
+    "PHONE_USE": ActionScoreConfig(
+        penalty_per_occurrence=1.0,
+        penalty_per_second=0.75,
+        grace_seconds=1.0,
+        max_penalty_per_occurrence=10.0,
+    ),
+    "EATING_DRINKING": ActionScoreConfig(
+        penalty_per_occurrence=0.5,
+        penalty_per_second=0.1,
+        grace_seconds=2.0,
+        max_penalty_per_occurrence=5.0,
+    ),
+    "SMOKING": ActionScoreConfig(
+        penalty_per_occurrence=0.5,
+        penalty_per_second=0.05,
+        grace_seconds=2.0,
+        max_penalty_per_occurrence=5.0,
     ),
 }
 
@@ -106,7 +166,8 @@ class DriveReport:
 
 class GameEngine:
     def __init__(self, config: Optional[Dict[str, ActionScoreConfig]] = None):
-        self.config = config if config is not None else DEFAULT_SCORE_CONFIG
+        source = config if config is not None else DEFAULT_SCORE_CONFIG
+        self.config = {normalize_action(a): c for a, c in source.items()}
         self._drive_start: Optional[float] = None
         self._active: Dict[str, float] = {}          # action -> start time
         self._occurrences: List[Occurrence] = []
@@ -118,10 +179,21 @@ class GameEngine:
         self._active.clear()
         self._occurrences.clear()
 
+    def run_from_csv(self, path: str) -> DriveReport:
+        """Replay a full drive from a CSV of events and return the report."""
+        events = load_events_from_csv(path)
+        if not events:
+            raise ValueError(f"No events found in {path}")
+        self.start_drive(events[0]["timestamp"])
+        for e in events:
+            self.process_event(e["action"], e["is_active"], e["timestamp"])
+        return self.end_drive(events[-1]["timestamp"])
+
     def process_event(self, action: str, is_active: bool,
                       timestamp: Optional[float] = None) -> None:
         """Record an event. Produces no output - results come from end_drive()."""
         ts = self._now(timestamp)
+        action = normalize_action(action)
         if self._drive_start is None:
             self._drive_start = ts
         if action not in self.config:
@@ -180,13 +252,6 @@ class GameEngine:
 
 
 if __name__ == "__main__":
+    csv_path = Path(__file__).parent / "test_inputs.csv"
     game = GameEngine()
-    game.start_drive(0.0)
-    game.process_event("phone_call", True, 10.0)
-    game.process_event("phone_call", False, 18.0)
-    game.process_event("eyes_off_road", True, 30.0)
-    game.process_event("eyes_off_road", False, 30.3)   # under grace period
-    game.process_event("eyes_off_road", True, 45.0)
-    game.process_event("eyes_off_road", False, 48.0)
-    game.process_event("phone_call", True, 100.0)      # still active at end
-    print(game.end_drive(120.0))
+    print(game.run_from_csv(str(csv_path)))

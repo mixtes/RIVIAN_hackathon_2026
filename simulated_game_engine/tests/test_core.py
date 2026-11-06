@@ -26,7 +26,7 @@ def test_hello_reply(core) -> None:
     assert reply["ts"].endswith("Z")
     uuid.UUID(reply["msg_id"])
     assert reply["payload"] == {"engine_version": ENGINE_VERSION, "active_session_id": None,
-                                "supported_actions": ["EYES_OFF_ROAD", "PHONE_CALL"]}
+                                "supported_actions": ["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"]}
 
 
 def test_hello_reports_active_session(core) -> None:
@@ -195,11 +195,11 @@ def test_action_ending_before_first_alert_sends_no_clear(core, clock) -> None:
 
 def test_unconfigured_action_is_forwarded_and_ignored(core, clock) -> None:
     _start(core)
-    assert core.set_action("smoking", True) == []
+    assert core.set_action("sneezing", True) == []
     assert run_for(core, clock, 2.0) == []
-    assert core.set_action("smoking", False) == []
+    assert core.set_action("sneezing", False) == []
     result = core.end_session()[-1]["payload"]
-    assert "SMOKING" not in {m["type"] for m in result["mistakes"]}
+    assert "SNEEZING" not in {m["type"] for m in result["mistakes"]}
 
 
 def test_simultaneous_escalations_all_delivered_in_per_action_mode(core, clock) -> None:
@@ -237,8 +237,8 @@ def test_end_session_clears_alerts_then_sends_result(core, clock) -> None:
     assert result["user_id"]
     assert result["engine_version"] == ENGINE_VERSION
     assert result["extra"]["end_reason"] == "ENGINE"
-    # still-active action is closed at end of drive: 8 s phone call = 9 pts
-    assert result["score"] == 91.0
+    # still-active action is closed at end of drive: 8 s phone call = 1 + 0.5*8 = 5 pts
+    assert result["score"] == 95.0
     assert result["events"][0]["duration_s"] == 8.0
     assert not core.active_actions and core.status().alert_ids == {}
 

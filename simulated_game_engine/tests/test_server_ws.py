@@ -63,7 +63,7 @@ async def test_full_round_trip(bridge: BridgeServer) -> None:
     async with connect(url(bridge)) as ws:
         h = await hello(ws)
         assert h["payload"]["active_session_id"] is None
-        assert h["payload"]["supported_actions"] == ["EYES_OFF_ROAD", "PHONE_CALL"]
+        assert h["payload"]["supported_actions"] == ["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"]
 
         await send(ws, p.SESSION_START, session_id=sid, user_id=uid, display_name="Mihajlo",
                    car_id="car-1", started_at="2026-11-06T08:00:00Z")

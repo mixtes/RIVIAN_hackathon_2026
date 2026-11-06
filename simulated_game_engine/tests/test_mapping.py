@@ -14,11 +14,11 @@ def _report(engine):
     game = system.game
     game.start_drive(1000.0)
     game.process_event("phone_call", True, 1010.0)
-    game.process_event("phone_call", False, 1018.0)       # 8 s: 5 + 0.5*8 = 9 pts
+    game.process_event("phone_call", False, 1018.0)       # 8 s: 1 + 0.5*8 = 5 pts
     game.process_event("eyes_off_road", True, 1030.0)
     game.process_event("eyes_off_road", False, 1030.3)    # under 0.5 s grace: ignored
     game.process_event("eyes_off_road", True, 1045.0)
-    game.process_event("eyes_off_road", False, 1048.0)    # 3 s: 3 + 3 = 6 pts
+    game.process_event("eyes_off_road", False, 1048.0)    # 3 s: 1 + 3 = 4 pts
     return game, game.end_drive(1120.0)
 
 
@@ -31,7 +31,7 @@ def test_drive_report_mapping(engine) -> None:
         is_penalized=lambda o: game.score_occurrence(o) > 0,
     ).model_dump(mode="json")
 
-    assert result["score"] == 85.0
+    assert result["score"] == 91.0
     assert result["started_at"] == "2026-11-06T08:00:00.000Z"
     assert result["ended_at"] == "2026-11-06T08:02:00.000Z"
     assert result["distance_km"] is None
@@ -45,7 +45,8 @@ def test_drive_report_mapping(engine) -> None:
         {"type": "PHONE_CALL", "started_at": "2026-11-06T08:00:10.000Z", "duration_s": 8.0},
         {"type": "EYES_OFF_ROAD", "started_at": "2026-11-06T08:00:45.000Z", "duration_s": 3.0},
     ]
-    assert result["extra"]["penalties"] == {"EYES_OFF_ROAD": 6.0, "PHONE_CALL": 9.0}
+    assert {k: v for k, v in result["extra"]["penalties"].items() if v} == {
+        "EYES_OFF_ROAD": 4.0, "PHONE_CALL": 5.0}
     assert result["extra"]["end_reason"] == "MANUAL"
 
 
@@ -60,5 +61,5 @@ def test_clean_drive_lists_configured_types_with_zero(engine) -> None:
     )
     assert result.score == 100.0
     assert result.events == []
-    assert {m.type for m in result.mistakes} == {"PHONE_CALL", "EYES_OFF_ROAD"}
+    assert {m.type for m in result.mistakes} == set(["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"])
     assert all(m.count == 0 for m in result.mistakes)

@@ -20,7 +20,7 @@ def test_load_engine_gives_working_safety_system(engine) -> None:
     system.start_drive(0.0)
     alert = system.on_event("phone_call", True, 0.0)
     assert alert is not None and alert.level.name == "VISUAL"
-    assert set(system.alerts.config) >= {"phone_call", "eyes_off_road"}
+    assert set(system.alerts.config) >= {"PHONE_CALL", "EYES_OFF_ROAD"}
 
 
 def test_load_engine_is_cwd_independent(engine, tmp_path, monkeypatch) -> None:

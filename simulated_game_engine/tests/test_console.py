@@ -35,10 +35,10 @@ async def test_commands(console, core, capsys) -> None:
     await con.execute("start PHONE_CALL")
     await con.execute("status")
     out = capsys.readouterr().out
-    assert "active:      phone_call" in out and "configured:  eyes_off_road, phone_call" in out
+    assert "active:      phone_call" in out and "configured:  eating_drinking, eyes_closed, eyes_off_road" in out
     await con.execute("stop phone_call")
-    await con.execute("start smoking")
-    assert "does not configure 'smoking'" in capsys.readouterr().out
+    await con.execute("start sneezing")
+    assert "does not configure 'sneezing'" in capsys.readouterr().out
     await con.execute("end")
     assert [m["type"] for m in ft.sent] == [p.ALERT, p.ALERT_CLEAR, p.DRIVE_RESULT]
     await con.execute("drop")
