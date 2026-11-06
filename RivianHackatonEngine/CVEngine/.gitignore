@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pt
+*.ts
+*.mp4
+*.mov
+out*/
+*.npz
+*.csv
+*.pptx
+.DS_Store
