@@ -1,325 +1,328 @@
 """
-AlertEngine - real-time driver safety alarming (Python service <-> Kotlin app).
+AlertEngine - real-time driver safety alerting (pure Python library).
+
+Contract: AlertEngine/CAR_FRONTEND_INTERFACE.md (agreed with the car app).
+
+Receives driver-action events (e.g. "PHONE_CALL") and returns, from every
+call, the list of alert changes the car app must show:
+
+  * Alert       - new occurrence or a higher level (same alert_id per occurrence)
+  * AlertClear  - remove an alert ("ended" by the detector or "dismissed" by the driver)
+
+No networking, threads, sleeping, printing or wall clock: all timing comes from
+the `timestamp` argument (monotonic float seconds; None -> time.monotonic()).
+The WebSocket bridge (simulated_game_engine/) turns the results into messages.
 
 Rules
 -----
-* drowsiness       : starts on detector "start" event, rings until the user
-                     dismisses it in the app (LATCHED). Detector "end" is ignored.
-                     A new "start" right after dismiss rings again immediately.
-                     Has PRIORITY: while it rings, the hands alarm is silenced.
-* hands_off_wheel  : starts on detector "start" event, rings for 3 s (TIMED).
-                     New "start" events during those 3 s are ignored.
-                     After the 3 s: 1 s pause, then rings again if hands are
-                     still off the wheel (i.e. no "end" event arrived).
+* Each occurrence (is_active True ... False) gets one uuid4 alert_id. Repeated
+  True is idempotent. An Alert is returned only when the level goes up.
+* Non-latched action: False -> AlertClear(reason="ended") if it had alerted.
+* Latched action (EYES_CLOSED = drowsiness): alerts carry requires_ack=True and
+  stay after False; only dismiss(alert_id) removes them. If the action is still
+  active at dismiss time, a new occurrence (new id) starts right away.
+* No priority suppression: the app orders alerts by level itself.
 
-Messages (JSON over WebSocket)
-------------------------------
-Python -> app : ALARM_START, ALARM_END, SNAPSHOT (sent on connect)
-app -> Python : DISMISS {"alarm_id": ...}
-(test only)   : DETECTION {"action": ..., "kind": "start"|"end"}
+Usage:
+    engine = AlertEngine()
+    engine.process_event("PHONE_CALL", True, 0.0)    # -> [Alert(VISUAL)]
+    engine.tick_all(3.0)                             # -> [Alert(AUDIO)]
+    engine.process_event("PHONE_CALL", False, 5.0)   # -> [AlertClear("ended")]
 
-Detector input: the model runs in this same program (section 4b) and calls
-submit_detection(action, kind). "ts" in messages is a monotonic clock
-(seconds), used only for timing - not wall-clock time.
-
-Run
----
-    python alert_engine.py --simulate        # offline scenario, no deps
-    python alert_engine.py --serve           # WebSocket server + real model (pip install websockets)
-    python alert_engine.py --serve --fake    # WebSocket server + scripted fake detector
+Run `python AlertEngine.py` for an offline demo with a simulated clock.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-import queue
-import threading
 import time
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional
+import uuid
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Dict, List, Optional, Union
 
 
-# ===========================================================================
-# 1. Configuration
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
 
-HANDS = "hands_off_wheel"
-DROWSY = "drowsiness"
+# The 8 canonical action keys, shared with the GameEngine, bridge, car app and
+# backend. Fixed: don't add, rename or drop any.
+ACTIONS = (
+    "PHONE_CALL",
+    "PHONE_USE",
+    "HANDS_OFF_WHEEL",
+    "EYES_CLOSED",       # also drowsiness (there is no DROWSINESS type)
+    "EYES_OFF_ROAD",
+    "YAWN",
+    "EATING_DRINKING",
+    "SMOKING",
+)
 
-HANDS_ALARM_DURATION_S = 3.0   # how long the hands alarm rings
-HANDS_PAUSE_S = 1.0            # silence between two hands alarms
-TICK_HZ = 10                   # how often the engine checks timers
 
-WS_HOST = "0.0.0.0"
-WS_PORT = 8765
+def normalize_action(action: str) -> str:
+    """Canonical form of an action name: stripped and upper-case."""
+    return action.strip().upper()
 
 
-# ===========================================================================
-# 2. Outgoing messages
-# ===========================================================================
+def _now(timestamp: Optional[float]) -> float:
+    return time.monotonic() if timestamp is None else float(timestamp)
+
+
+# ---------------------------------------------------------------------------
+# Types (names are read by the bridge - don't rename)
+# ---------------------------------------------------------------------------
+
+class AlertLevel(IntEnum):
+    NONE = 0       # internal only: never put in an Alert
+    VISUAL = 1     # amber banner
+    AUDIO = 2      # amber banner + chime + voice
+    HAPTIC = 3     # red pulsing banner + double chime + voice
+    CRITICAL = 4   # full-screen red overlay + repeating alarm
+
 
 @dataclass
-class AlarmStart:
-    alarm_id: str
-    action: str
-    mode: str                          # "TIMED" | "LATCHED"
-    duration_s: Optional[float]        # only for TIMED
-    ts: float
-    type: str = "ALARM_START"
+class Alert:
+    alert_id: str            # same id for every escalation of one occurrence
+    action: str              # one of ACTIONS, UPPER_CASE
+    level: AlertLevel        # VISUAL..CRITICAL, never NONE
+    message: str             # shown on screen and spoken by TTS
+    duration_so_far: float   # seconds the action has lasted (>= 0)
+    timestamp: float         # monotonic; occurrence start = timestamp - duration_so_far
+    requires_ack: bool = False   # True = latched: stays until the driver dismisses
 
 
 @dataclass
-class AlarmEnd:
-    alarm_id: str
+class AlertClear:
+    alert_id: str
     action: str
-    reason: str                        # "timeout" | "dismissed" | "preempted"
-    ts: float
-    type: str = "ALARM_END"
+    last_level: AlertLevel   # highest level shown in this occurrence
+    duration: float          # how long the occurrence lasted (seconds)
+    timestamp: float
+    reason: str              # "ended" | "dismissed"
 
 
-Message = object  # AlarmStart | AlarmEnd
+AlertUpdate = Union[Alert, AlertClear]
 
 
-def to_json(msg) -> str:
-    return json.dumps(asdict(msg))
-
-
-# ===========================================================================
-# 3. Engine (pure logic - no I/O, no real clock; easy to test)
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
 @dataclass
-class _Alarm:
-    alarm_id: str
+class EscalationStep:
+    after_seconds: float     # time since the occurrence started
+    level: AlertLevel
+    message: str
+
+
+@dataclass
+class ActionAlertConfig:
+    steps: List[EscalationStep]   # sorted by after_seconds; levels strictly increasing
+    latched: bool = False         # True = alerts need a driver Dismiss (requires_ack)
+
+
+# Messages: short (< ~40 chars), plain English, no emoji - they are spoken.
+# TODO: tune thresholds and messages.
+DEFAULT_ALERT_CONFIG: Dict[str, ActionAlertConfig] = {
+    "PHONE_CALL": ActionAlertConfig(steps=[
+        EscalationStep(0.0, AlertLevel.VISUAL, "Please put the phone down."),
+        EscalationStep(3.0, AlertLevel.AUDIO, "Phone call detected. Eyes on the road."),
+        EscalationStep(6.0, AlertLevel.HAPTIC, "Stop using the phone now!"),
+        EscalationStep(10.0, AlertLevel.CRITICAL, "Hang up and focus on driving!"),
+    ]),
+    "PHONE_USE": ActionAlertConfig(steps=[
+        EscalationStep(0.0, AlertLevel.VISUAL, "Please put the phone away."),
+        EscalationStep(2.0, AlertLevel.AUDIO, "Phone use detected. Eyes on the road."),
+        EscalationStep(4.0, AlertLevel.HAPTIC, "Stop using the phone now!"),
+        EscalationStep(8.0, AlertLevel.CRITICAL, "Put the phone away now!"),
+    ]),
+    # Replaces the old TIMED rule (3 s on / 1 s pause): the app repeats the
+    # CRITICAL tone every 2 s by itself.
+    "HANDS_OFF_WHEEL": ActionAlertConfig(steps=[
+        EscalationStep(1.0, AlertLevel.VISUAL, "Keep your hands on the wheel."),
+        EscalationStep(3.0, AlertLevel.AUDIO, "Hands on the wheel, please."),
+        EscalationStep(6.0, AlertLevel.HAPTIC, "Take the wheel now!"),
+        EscalationStep(10.0, AlertLevel.CRITICAL, "Danger! Hold the wheel!"),
+    ]),
+    # Drowsiness: latched, rings until the driver presses Dismiss.
+    "EYES_CLOSED": ActionAlertConfig(latched=True, steps=[
+        EscalationStep(0.5, AlertLevel.CRITICAL, "Wake up! Pull over and rest."),
+    ]),
+    "EYES_OFF_ROAD": ActionAlertConfig(steps=[  # STUB: not detected yet
+        EscalationStep(1.0, AlertLevel.AUDIO, "Eyes on the road."),
+        EscalationStep(2.5, AlertLevel.HAPTIC, "Look at the road!"),
+        EscalationStep(4.0, AlertLevel.CRITICAL, "Danger! Eyes off the road!"),
+    ]),
+    "YAWN": ActionAlertConfig(steps=[  # STUB: not detected yet
+        EscalationStep(0.0, AlertLevel.VISUAL, "You seem tired. Consider a break."),
+    ]),
+    "EATING_DRINKING": ActionAlertConfig(steps=[  # STUB: not detected yet
+        EscalationStep(2.0, AlertLevel.VISUAL, "Eating or drinking. Stay focused."),
+        EscalationStep(8.0, AlertLevel.AUDIO, "Please eat when you are stopped."),
+    ]),
+    "SMOKING": ActionAlertConfig(steps=[  # STUB: not detected yet
+        EscalationStep(2.0, AlertLevel.VISUAL, "Smoking detected. Stay focused."),
+        EscalationStep(10.0, AlertLevel.AUDIO, "Keep your attention on the road."),
+    ]),
+}
+
+
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _Occurrence:
+    alert_id: str
     action: str
-    start_ts: float
-    end_ts: Optional[float] = None     # None = latched (until dismiss)
+    start_time: float
+    latched: bool
+    end_time: Optional[float] = None       # set when the detector says False
+    level: AlertLevel = AlertLevel.NONE    # highest level raised so far
+    last_alert: Optional[Alert] = None     # latest Alert sent for this occurrence
 
 
 class AlertEngine:
-    def __init__(self) -> None:
-        self._counter: Dict[str, int] = {HANDS: 0, DROWSY: 0}
-        self._drowsy_alarm: Optional[_Alarm] = None
-        self._hands_alarm: Optional[_Alarm] = None
-        self._hands_off = False                    # condition from detector
-        self._hands_pause_until = float("-inf")
+    """Pure, deterministic, single-threaded. Every call returns what changed."""
 
-    # ---- 3.1 inputs --------------------------------------------------------
+    def __init__(self, config: Optional[Dict[str, ActionAlertConfig]] = None):
+        source = config if config is not None else DEFAULT_ALERT_CONFIG
+        self.config: Dict[str, ActionAlertConfig] = {}
+        for action, cfg in source.items():
+            steps = sorted(cfg.steps, key=lambda s: s.after_seconds)
+            self.config[normalize_action(action)] = ActionAlertConfig(steps, cfg.latched)
+        # Occurrences whose action is currently active, by action.
+        self._open: Dict[str, _Occurrence] = {}
+        # Latched occurrences that raised an alert and wait for dismiss, by id.
+        self._held: Dict[str, _Occurrence] = {}
 
-    def on_detection(self, action: str, kind: str, ts: float) -> List[Message]:
-        """Detector event. kind = "start" | "end"."""
-        out: List[Message] = []
+    # ---- public API -------------------------------------------------------
 
-        if action == DROWSY:
-            if kind == "start" and self._drowsy_alarm is None:
-                # Priority: silence the hands alarm first.
-                if self._hands_alarm is not None:
-                    out.append(self._end_hands(ts, reason="preempted"))
-                self._drowsy_alarm = _Alarm(self._new_id(DROWSY), DROWSY, ts)
-                out.append(AlarmStart(self._drowsy_alarm.alarm_id, DROWSY,
-                                      "LATCHED", None, ts))
-            # "end" for drowsiness is ignored by design.
-
-        elif action == HANDS:
-            self._hands_off = (kind == "start")
-            out += self._maybe_start_hands(ts)
-
-        return out
-
-    def dismiss(self, alarm_id: str, ts: float) -> List[Message]:
-        """User pressed 'dismiss' in the app."""
-        out: List[Message] = []
-        a = self._drowsy_alarm
-        if a is not None and a.alarm_id == alarm_id:
-            self._drowsy_alarm = None
-            out.append(AlarmEnd(a.alarm_id, DROWSY, "dismissed", ts))
-            # Hands still off? -> hands alarm can ring now.
-            out += self._maybe_start_hands(ts)
-        return out
-
-    def tick(self, ts: float) -> List[Message]:
-        """Call periodically (TICK_HZ). Handles the 3 s timer and the pause."""
-        out: List[Message] = []
-        a = self._hands_alarm
-        if a is not None and ts >= a.end_ts:
-            out.append(self._end_hands(a.end_ts, reason="timeout"))
-            self._hands_pause_until = a.end_ts + HANDS_PAUSE_S
-        out += self._maybe_start_hands(ts)
-        return out
-
-    def snapshot(self) -> dict:
-        """All currently ringing alarms - sent to the app on (re)connect."""
-        active = [a for a in (self._drowsy_alarm, self._hands_alarm) if a]
-        return {"type": "SNAPSHOT",
-                "active": [{"alarm_id": a.alarm_id, "action": a.action,
-                            "start_ts": a.start_ts, "end_ts": a.end_ts}
-                           for a in active]}
-
-    # ---- 3.2 internals -----------------------------------------------------
-
-    def _maybe_start_hands(self, ts: float) -> List[Message]:
-        if (not self._hands_off
-                or self._hands_alarm is not None       # already ringing
-                or self._drowsy_alarm is not None      # drowsiness has priority
-                or ts < self._hands_pause_until):      # 1 s pause
-            return []
-        end = ts + HANDS_ALARM_DURATION_S
-        self._hands_alarm = _Alarm(self._new_id(HANDS), HANDS, ts, end)
-        return [AlarmStart(self._hands_alarm.alarm_id, HANDS, "TIMED",
-                           HANDS_ALARM_DURATION_S, ts)]
-
-    def _end_hands(self, ts: float, reason: str) -> AlarmEnd:
-        a = self._hands_alarm
-        self._hands_alarm = None
-        return AlarmEnd(a.alarm_id, HANDS, reason, ts)
-
-    def _new_id(self, action: str) -> str:
-        self._counter[action] += 1
-        prefix = "hands" if action == HANDS else "drowsy"
-        return f"{prefix}#{self._counter[action]}"
-
-
-# ===========================================================================
-# 4. WebSocket server (Python service <-> Kotlin app)
-# ===========================================================================
-
-# Thread-safe inbox for detector events. The model (running in its own thread
-# in this same Python program) calls submit_detection(); the server loop
-# drains the inbox on every tick.
-_detections: "queue.Queue[tuple[str, str]]" = queue.Queue()
-
-
-def submit_detection(action: str, kind: str) -> None:
-    """Call from the model code, e.g. submit_detection("hands_off_wheel", "start")."""
-    _detections.put((action, kind))
-
-
-async def serve() -> None:
-    import asyncio
-    import websockets  # pip install websockets
-
-    engine = AlertEngine()
-    clients = set()
-    detections = _detections
-
-    async def broadcast(msgs: List[Message]) -> None:
-        for m in msgs:
-            data = to_json(m)
-            print(data)
-            for ws in list(clients):
-                try:
-                    await ws.send(data)
-                except Exception:
-                    clients.discard(ws)
-
-    async def handler(ws) -> None:
-        clients.add(ws)
-        await ws.send(json.dumps(engine.snapshot()))
+    def process_event(self, action: str, is_active: bool,
+                      timestamp: Optional[float] = None) -> List[AlertUpdate]:
+        """Detector input. True = action started / still going, False = ended."""
+        ts = _now(timestamp)
         try:
-            async for raw in ws:
-                msg = json.loads(raw)
-                if msg.get("type") == "DISMISS":
-                    await broadcast(engine.dismiss(msg["alarm_id"], time.monotonic()))
-                elif msg.get("type") == "DETECTION":   # handy for testing
-                    submit_detection(msg["action"], msg["kind"])
-        finally:
-            clients.discard(ws)
+            action = normalize_action(action)
+        except AttributeError:
+            return []
+        if action not in self.config:
+            return []  # unknown action - ignore, never raise
 
-    async def loop() -> None:
-        period = 1.0 / TICK_HZ
-        while True:
-            now = time.monotonic()
-            while True:
-                try:
-                    action, kind = detections.get_nowait()
-                except queue.Empty:
-                    break
-                await broadcast(engine.on_detection(action, kind, now))
-            await broadcast(engine.tick(now))
-            await asyncio.sleep(period)
+        if is_active:
+            occ = self._open.get(action)
+            if occ is None:
+                occ = self._start(action, ts)
+            return self._evaluate(occ, ts)
 
-    async with websockets.serve(handler, WS_HOST, WS_PORT):
-        print(f"AlertEngine listening on ws://{WS_HOST}:{WS_PORT}")
-        await loop()
+        occ = self._open.pop(action, None)
+        if occ is None or occ.level == AlertLevel.NONE:
+            return []
+        occ.end_time = ts
+        if occ.latched:
+            return []  # stays in _held until dismiss
+        return [self._clear(occ, ts, "ended")]
+
+    def tick_all(self, timestamp: Optional[float] = None) -> List[AlertUpdate]:
+        """Call periodically (~100 ms). Returns escalations of all active actions."""
+        ts = _now(timestamp)
+        out: List[AlertUpdate] = []
+        for occ in list(self._open.values()):
+            out += self._evaluate(occ, ts)
+        return out
+
+    def dismiss(self, alert_id: str, timestamp: Optional[float] = None) -> List[AlertUpdate]:
+        """Driver pressed Dismiss. Only latched alerts can be dismissed."""
+        ts = _now(timestamp)
+        occ = self._held.pop(alert_id, None) if isinstance(alert_id, str) else None
+        if occ is None:
+            return []
+        out: List[AlertUpdate] = [self._clear(occ, ts, "dismissed")]
+        if self._open.get(occ.action) is occ:
+            # Still active: a new occurrence starts now (rings again if it lasts).
+            out += self._evaluate(self._start(occ.action, ts), ts)
+        return out
+
+    def active_alerts(self) -> List[Alert]:
+        """Latest Alert of every alert still showing (for reconnect / keep-alive)."""
+        seen = set()
+        out: List[Alert] = []
+        for occ in list(self._open.values()) + list(self._held.values()):
+            if occ.last_alert is not None and occ.alert_id not in seen:
+                seen.add(occ.alert_id)
+                out.append(occ.last_alert)
+        return out
+
+    def active_actions(self) -> List[str]:
+        """Actions currently reported as active by the detector."""
+        return list(self._open)
+
+    def reset(self) -> None:
+        """Forget everything (drive start / end). Emits nothing."""
+        self._open.clear()
+        self._held.clear()
+
+    # ---- internals --------------------------------------------------------
+
+    def _start(self, action: str, ts: float) -> _Occurrence:
+        occ = _Occurrence(str(uuid.uuid4()), action, ts, self.config[action].latched)
+        self._open[action] = occ
+        return occ
+
+    def _evaluate(self, occ: _Occurrence, ts: float) -> List[AlertUpdate]:
+        duration = max(0.0, ts - occ.start_time)
+        step = None
+        for s in self.config[occ.action].steps:
+            if duration >= s.after_seconds:
+                step = s
+        if step is None or step.level <= occ.level:
+            return []  # nothing reached yet, or no level increase
+        occ.level = step.level
+        occ.last_alert = Alert(occ.alert_id, occ.action, step.level, step.message,
+                               duration, ts, requires_ack=occ.latched)
+        if occ.latched:
+            self._held[occ.alert_id] = occ
+        return [occ.last_alert]
+
+    @staticmethod
+    def _clear(occ: _Occurrence, ts: float, reason: str) -> AlertClear:
+        end = occ.end_time if occ.end_time is not None else ts
+        return AlertClear(occ.alert_id, occ.action, occ.level,
+                          max(0.0, end - occ.start_time), ts, reason)
 
 
-# ===========================================================================
-# 4b. Detector hook - plug the model in here
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Offline demo (simulated clock) - dev only, never runs on import
+# ---------------------------------------------------------------------------
 
-def detector_loop() -> None:
-    """
-    Runs in its own thread. Replace the body with the real model loop:
-
-        while True:
-            frame = camera.read()
-            for action, kind in model.process(frame):   # e.g. ("drowsiness", "start")
-                submit_detection(action, kind)
-    """
-    pass
-
-
-def fake_detector_loop() -> None:
-    """Scripted events for testing the Kotlin app without the model (--fake)."""
-    script = [
-        (2.0,  HANDS,  "start"),
-        (9.0,  HANDS,  "end"),
-        (12.0, DROWSY, "start"),   # rings until DISMISS from the app
-    ]
-    t0 = time.monotonic()
-    for at, action, kind in script:
-        time.sleep(max(0.0, t0 + at - time.monotonic()))
-        print(f"[fake detector] {action} {kind}")
-        submit_detection(action, kind)
-
-
-# ===========================================================================
-# 5. Offline simulator (simulated clock)
-# ===========================================================================
-
-# (timestamp, kind, action/alarm_id, event)
-SCENARIO = [
-    (0.0,  "det", HANDS,     "start"),   # hands alarm #1
-    (5.0,  "det", HANDS,     "end"),     # #2 (started at 4.0) still rings to 7.0
-    (8.0,  "det", HANDS,     "start"),   # hands alarm #3
-    (9.0,  "det", DROWSY,    "start"),   # drowsiness preempts hands
-    (10.0, "det", DROWSY,    "start"),   # ignored - already ringing
-    (12.0, "app", "drowsy#1", None),     # dismiss -> hands still off -> #4
-    (12.5, "det", DROWSY,    "start"),   # rings again immediately
-    (14.0, "det", HANDS,     "end"),
-    (15.0, "app", "drowsy#2", None),     # dismiss -> nothing else rings
-]
-
-
-def simulate(end_ts: float = 17.0) -> None:
+def _demo() -> None:
     engine = AlertEngine()
-    events = sorted(SCENARIO, key=lambda e: e[0])
-    i, t, dt = 0, 0.0, 1.0 / TICK_HZ
-    while t <= end_ts + 1e-9:
-        while i < len(events) and events[i][0] <= t + 1e-9:
-            ts, src, who, kind = events[i]
-            msgs = (engine.on_detection(who, kind, ts) if src == "det"
-                    else engine.dismiss(who, ts))
-            for m in msgs:
-                print(f"{ts:5.1f}  {to_json(m)}")
+    script = [  # (timestamp, kind, action, is_active)
+        (0.0, "det", "hands_off_wheel", True),
+        (4.0, "det", "PHONE_CALL", True),
+        (7.0, "det", "HANDS_OFF_WHEEL", False),
+        (8.0, "det", "PHONE_CALL", False),
+        (9.0, "det", "EYES_CLOSED", True),
+        (10.0, "det", "EYES_CLOSED", False),   # latched: alert stays
+        (12.0, "dismiss", "EYES_CLOSED", None),
+    ]
+    t, i = 0.0, 0
+    while t <= 13.0 + 1e-9:
+        t = round(t, 3)
+        while i < len(script) and script[i][0] <= t + 1e-9:
+            _, kind, action, active = script[i]
+            if kind == "det":
+                updates = engine.process_event(action, active, t)
+            else:
+                ids = [a.alert_id for a in engine.active_alerts() if a.action == action]
+                updates = engine.dismiss(ids[0], t) if ids else []
+            for u in updates:
+                print(f"{t:5.1f}  {u}")
             i += 1
-        for m in engine.tick(round(t, 3)):
-            print(f"{t:5.1f}  {to_json(m)}")
-        t += dt
+        for u in engine.tick_all(t):
+            print(f"{t:5.1f}  {u}")
+        t += 0.1
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--serve", action="store_true")
-    p.add_argument("--simulate", action="store_true")
-    p.add_argument("--fake", action="store_true",
-                   help="with --serve: use scripted fake detector instead of the model")
-    args = p.parse_args()
-    if args.serve:
-        import asyncio
-        target = fake_detector_loop if args.fake else detector_loop
-        threading.Thread(target=target, daemon=True).start()
-        asyncio.run(serve())
-    else:
-        simulate()
+    _demo()
