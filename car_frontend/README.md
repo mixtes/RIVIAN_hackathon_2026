@@ -22,7 +22,7 @@ Toolchain: AGP 9.5.1 (built-in Kotlin), Kotlin 2.4.21, KSP 2.3.13, Compose BOM 2
 ```bash
 cd car_frontend
 ./gradlew :app:assembleDebug        # → app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:testDebugUnitTest    # 57 JVM unit tests
+./gradlew :app:testDebugUnitTest    # 74 JVM unit tests
 ```
 
 Debug `BuildConfig` defaults (in `app/build.gradle.kts`):
@@ -54,7 +54,7 @@ Start the other two projects on the host first:
 
 The emulator reaches both through `10.0.2.2`. On first launch the app registers the car with `POST /cars/register`. If the backend is unreachable, registration is retried by WorkManager (`register-car`) when the network comes back.
 
-**No engine or backend?** Turn on **Debug settings → FakeEngine (in-app)**. The fake engine emits random alerts every 20–60 s and returns a random `drive.result` when you end the drive. Debug settings also has buttons that send a test alert at each level and that simulate a `drive.result`.
+**No engine or backend?** Turn on **Debug settings → FakeEngine (in-app)**. The fake engine emits random alerts every 20–60 s (sometimes a latched `EYES_CLOSED` drowsiness alert that waits for **Dismiss**) and returns a random `drive.result` when you end the drive. Debug settings also has buttons that send a test alert at each level, a test **latched** alert, and that simulate a `drive.result`.
 
 ### Simulating driving state (PARKED / MOVING)
 
@@ -95,6 +95,7 @@ Key flows:
 - **Result:** engine `drive.result` → `SessionManager.handleResult` → `DriveRepository.persist` (validate, normalize, one Room transaction) → **then** `drive.result.ack` → Result screen → `SyncDrivesWorker`.
 - **Reconnect:** `EngineClient` reconnects forever. On each open the gateway sends `hello`. When the engine's `hello` arrives, the gateway ends a foreign `active_session_id` (`DRIVER_SWITCH`) and re-sends `session.start` with the same id.
 - **Alerts:** `AlertQueue` decides what is shown and what sounds. `AlertPresenter` runs the effects. When the app is in the background, alerts become heads-up notifications posted from the foreground service.
+- **Latched alerts** (`requires_ack`, e.g. drowsiness): shown with a big **Dismiss** button, no `ttl_s`, outrank everything. Dismiss (overlay button, or the notification action handled by `EngineConnectionService`) removes it locally at once and sends `alert.dismiss`; the engine's `alert.clear` is then a no-op, and a still-closed-eyes re-alarm arrives as a new `alert_id`.
 
 ## End-to-end smoke test (done once, 2026-11-06)
 
@@ -116,7 +117,7 @@ Implemented (milestones M1–M6):
 - Car registration with offline retry.
 - Create account, sign in, and Forgot PIN / re-link, with server errors mapped to form fields.
 - PIN choose/confirm with a trivial-PIN warning; PIN unlock with auto-submit, shake, and the full §10.4 lockout; Change PIN; Remove me, with sync-first and the "N drives will be lost" warning, queued if offline.
-- The full engine protocol (§8) and alert presentation (§9: priority, preemption, escalation, cooldown, min/max display, CRITICAL repeats, TTS, audio focus, heads-up notifications).
+- The full engine protocol (§8) and alert presentation (§9: priority, preemption, escalation, cooldown, min/max display, CRITICAL repeats, latched alerts with Dismiss + `alert.dismiss`, TTS, audio focus, heads-up notifications with a Dismiss action).
 - Result and Details screens, including unknown mistake types and the timeline.
 - Room + `SyncDrivesWorker` handling every §11.3 response class, plus periodic and on-connectivity sync.
 - History merging local and server drives with cursor paging; Stats with a Canvas trend chart and mistake bars, an offline cache, and a local "this car only" fallback; Leaderboard with region/global, paging, pull to refresh, and a pinned "my position".
@@ -128,5 +129,5 @@ Stubbed or simplified (be aware):
 - **Vehicle signals** (ignition → end session) are wired behind a debug flag. They need `CAR_POWERTRAIN`, which a normal app won't get, so they are untested on real hardware.
 - **Real haptics** don't exist on AAOS for apps. `HAPTIC` is a red pulsing banner plus a double chime, per the spec.
 - **Debug screen strings** are hard-coded in English. All user-facing strings are in `strings.xml`.
-- **Tests:** 57 JVM unit tests cover PIN hashing and lockout (including clock tampering and reboot), all `SessionManager` transitions, `AlertQueue`, protocol (de)serialization, backoff, result mapping and upload body, the sync response classes and `DriveSyncer`, and `EngineClient` + gateway against a MockWebServer WebSocket (hello, ack/retry, alerts, results, reconnect + resume + foreign-session end), and the `AlertPresenter` wiring. **Not written yet:** Room DAO instrumented tests, Compose UI tests, and a `SyncDrivesWorker` test with `WorkManagerTestInitHelper`. Those need an emulator or Robolectric.
+- **Tests:** 74 JVM unit tests cover PIN hashing and lockout (including clock tampering and reboot), all `SessionManager` transitions, `AlertQueue` (including latched alerts: no ttl, Dismiss, cooldown bypass, priority), protocol (de)serialization (including `requires_ack` and `alert.dismiss`), backoff, result mapping and upload body, the sync response classes and `DriveSyncer`, and `EngineClient` + gateway against a MockWebServer WebSocket (hello, ack/retry, alerts incl. latched + `alert.dismiss`, results, reconnect + resume + foreign-session end), and the `AlertPresenter` wiring (incl. Dismiss). **Not written yet:** Room DAO instrumented tests, Compose UI tests, and a `SyncDrivesWorker` test with `WorkManagerTestInitHelper`. Those need an emulator or Robolectric.
 - **Distraction optimization** on real head units still needs to be verified, as spec §3 and §19 #4 say.

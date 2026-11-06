@@ -42,5 +42,11 @@ interface EngineGateway {
     /** Sent after the result is persisted (spec §8.3). */
     fun ackResult(sessionId: String)
 
+    /**
+     * Sends `alert.dismiss` for a latched (`requires_ack`) alert (spec §8.3). Fire-and-forget: no ack,
+     * and if the connection is down the message is dropped, not queued.
+     */
+    fun dismissAlert(alertId: String, sessionId: String?)
+
     fun dropConnection()
 }

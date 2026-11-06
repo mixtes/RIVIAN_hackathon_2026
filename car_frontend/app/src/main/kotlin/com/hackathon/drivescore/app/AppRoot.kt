@@ -126,7 +126,8 @@ fun AppRoot(vm: RootViewModel) {
                     }
                 }
             }
-            AlertOverlay(alert)
+            // Above every screen and outside the driving-state gating (§7.3): a latched alert's Dismiss works while moving.
+            AlertOverlay(alert, onDismiss = vm::dismissAlert)
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(Space.L)) { data ->
                 Snackbar(
                     data, shape = CarShapes.Control,

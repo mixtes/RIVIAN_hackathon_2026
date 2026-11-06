@@ -11,6 +11,8 @@ class AlertQueueTest {
     private val q = AlertQueue()
     private fun a(id: String, type: String, level: AlertLevel, msg: String? = "m-$id", ttl: Double? = null) =
         EngineAlert(id, "s", type, level, msg, 0.0, ttl)
+    private fun latched(id: String, level: AlertLevel = AlertLevel.CRITICAL, ttl: Double? = null) =
+        EngineAlert(id, "s", "EYES_CLOSED", level, "Wake up! Pull over and rest.", 0.5, ttl, requiresAck = true)
 
     private fun List<AlertEffect>.sounds() = filterIsInstance<AlertEffect.PlaySound>().map { it.kind }
     private fun List<AlertEffect>.speaks() = filterIsInstance<AlertEffect.Speak>().map { it.text }
@@ -89,6 +91,72 @@ class AlertQueueTest {
         assertEquals("Hands on the wheel", q.displayed!!.text)
         q.onAlert(a("2", "WEIRD_THING", AlertLevel.AUDIO, msg = null), 0)
         assertEquals("Drive carefully", q.displayed!!.text)
+    }
+
+    @Test fun `latched alert never expires past its ttl, so it survives a lost connection`() {
+        q.onAlert(latched("L", ttl = 10.0), 0)
+        // No keep-alives arrive (connection lost): a normal alert would expire at 10 s.
+        listOf(10_000L, 15_000L, 60_000L, 600_000L).forEach { t -> q.tick(t); assertEquals("L", q.displayed!!.alertId) }
+        assertTrue(q.displayed!!.requiresAck)
+    }
+
+    @Test fun `dismiss removes a latched alert and emits stop, cancel and send effects`() {
+        q.onAlert(latched("L"), 0)
+        val e = q.dismiss("L", 1_000)
+        assertNull(q.displayed)
+        assertTrue(AlertEffect.StopAudio in e)
+        assertTrue(AlertEffect.CancelNotification("L") in e)
+        assertTrue(AlertEffect.SendDismiss("L", "s") in e)
+        // no alarm repeats after the dismiss
+        assertTrue(q.tick(3_000).sounds().isEmpty())
+    }
+
+    @Test fun `dismiss ignores unknown and non-latched alerts`() {
+        q.onAlert(a("1", "EYES_OFF_ROAD", AlertLevel.CRITICAL), 0)
+        assertTrue(q.dismiss("1", 100).isEmpty())
+        assertTrue(q.dismiss("nope", 100).isEmpty())
+        assertEquals("1", q.displayed!!.alertId)
+    }
+
+    @Test fun `clear after dismiss is a no-op, and late keep-alives for the dismissed id are ignored`() {
+        q.onAlert(a("v", "PHONE_CALL", AlertLevel.VISUAL), 0)
+        q.onAlert(latched("L"), 100)
+        q.dismiss("L", 1_000)
+        assertEquals("v", q.displayed!!.alertId)
+        assertTrue(q.onClear("L", 1_200).isEmpty())
+        assertTrue(q.onAlert(latched("L"), 1_300).isEmpty())
+        assertEquals("v", q.displayed!!.alertId)
+    }
+
+    @Test fun `a new occurrence after dismiss sounds again despite the same-type cooldown`() {
+        assertEquals(listOf(SoundKind.ALARM), q.onAlert(latched("L1"), 0).sounds())
+        q.dismiss("L1", 2_000)
+        val again = q.onAlert(latched("L2"), 2_300) // eyes still closed → new alert_id
+        assertEquals(listOf(SoundKind.ALARM), again.sounds())
+        assertEquals(listOf("Wake up! Pull over and rest."), again.speaks())
+        assertEquals("L2", q.displayed!!.alertId)
+        // and it repeats like CRITICAL
+        assertEquals(listOf(SoundKind.ALARM), q.tick(4_300).sounds())
+    }
+
+    @Test fun `latched outranks a non-latched critical, which resumes after the dismiss`() {
+        q.onAlert(latched("L"), 0)
+        q.onAlert(a("c", "EYES_OFF_ROAD", AlertLevel.CRITICAL), 500) // newer, same level
+        assertEquals("L", q.displayed!!.alertId)
+        q.onAlert(a("c", "EYES_OFF_ROAD", AlertLevel.CRITICAL), 5_500) // keep-alive doesn't steal it
+        assertEquals("L", q.displayed!!.alertId)
+        q.dismiss("L", 6_000)
+        assertEquals("c", q.displayed!!.alertId)
+    }
+
+    @Test fun `latched alert leaves on alert clear and on clearAll`() {
+        q.onAlert(latched("L"), 0)
+        q.onClear("L", 100)
+        assertNull(q.displayed)
+        q.onAlert(latched("L2"), 200)
+        val e = q.clearAll(300)
+        assertNull(q.displayed)
+        assertTrue(AlertEffect.CancelNotification("L2") in e)
     }
 
     @Test fun `clearAll removes everything and cancels notifications`() {

@@ -37,6 +37,9 @@ class AndroidAlertOutput(private val context: Context, private val log: AppLogge
     private val soundPool = SoundPool.Builder().setMaxStreams(3).setAudioAttributes(attrs).build()
     private val chimeId = soundPool.load(context, R.raw.chime_warning, 1)
     private val alarmId = soundPool.load(context, R.raw.alarm_critical, 1)
+    /** Recently started SoundPool streams, so [stopAudio] can cut them off. */
+    private val streams = ArrayDeque<Int>()
+    private val secondChime = Runnable { track(soundPool.play(chimeId, 1f, 1f, 1, 0, 1f)) }
 
     @Volatile private var ttsReady = false
     private val tts: TextToSpeech? = try {
@@ -75,13 +78,30 @@ class AndroidAlertOutput(private val context: Context, private val log: AppLogge
     override fun play(kind: SoundKind) {
         holdFocus(3_000)
         when (kind) {
-            SoundKind.CHIME -> soundPool.play(chimeId, 1f, 1f, 1, 0, 1f)
+            SoundKind.CHIME -> track(soundPool.play(chimeId, 1f, 1f, 1, 0, 1f))
             SoundKind.DOUBLE_CHIME -> {
-                soundPool.play(chimeId, 1f, 1f, 1, 0, 1f)
-                main.postDelayed({ soundPool.play(chimeId, 1f, 1f, 1, 0, 1f) }, 450)
+                track(soundPool.play(chimeId, 1f, 1f, 1, 0, 1f))
+                main.postDelayed(secondChime, 450)
             }
-            SoundKind.ALARM -> soundPool.play(alarmId, 1f, 1f, 2, 0, 1f)
+            SoundKind.ALARM -> track(soundPool.play(alarmId, 1f, 1f, 2, 0, 1f))
         }
+    }
+
+    private fun track(streamId: Int) {
+        if (streamId == 0) return
+        synchronized(streams) {
+            streams.addLast(streamId)
+            while (streams.size > 8) streams.removeFirst()
+        }
+    }
+
+    override fun stopAudio() {
+        main.removeCallbacks(secondChime)
+        val ids = synchronized(streams) { streams.toList().also { streams.clear() } }
+        ids.forEach { soundPool.stop(it) }
+        tts?.stop()
+        main.removeCallbacks(releaseFocus)
+        audio?.abandonAudioFocusRequest(focus)
     }
 
     override fun speak(text: String) {
@@ -95,7 +115,7 @@ class AndroidAlertOutput(private val context: Context, private val log: AppLogge
             context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val critical = alert.level == AlertLevel.CRITICAL
+        val critical = alert.level == AlertLevel.CRITICAL || alert.requiresAck
         val n = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("${alert.icon} ${alert.text}")
@@ -105,6 +125,14 @@ class AndroidAlertOutput(private val context: Context, private val log: AppLogge
             .setOnlyAlertOnce(false)
             .setContentIntent(intent)
             .apply { if (critical) setFullScreenIntent(intent, true) }
+            .apply {
+                // Latched (spec §9.3): not swipe-dismissable; the "Dismiss" action does what the overlay button does.
+                if (alert.requiresAck) {
+                    setOngoing(true)
+                    setAutoCancel(false)
+                    addAction(R.drawable.ic_notification, context.getString(R.string.alert_dismiss), EngineConnectionService.dismissAlertIntent(context, alert.alertId))
+                }
+            }
             .build()
         try {
             notifications?.notify(alert.alertId.hashCode(), n)

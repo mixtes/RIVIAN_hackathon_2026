@@ -36,7 +36,10 @@ enum class AlertLevel(val rank: Int) {
     }
 }
 
-/** One alert occurrence as delivered by the engine. Escalations reuse [alertId]. */
+/**
+ * One alert occurrence as delivered by the engine. Escalations reuse [alertId]. [requiresAck] = latched:
+ * stays (no ttl) until the driver presses Dismiss, the engine clears it, or the session ends (spec §9.1).
+ */
 data class EngineAlert(
     val alertId: String,
     val sessionId: String?,
@@ -45,6 +48,7 @@ data class EngineAlert(
     val message: String?,
     val durationSoFarS: Double?,
     val ttlS: Double?,
+    val requiresAck: Boolean = false,
 )
 
 sealed interface AlertEvent {

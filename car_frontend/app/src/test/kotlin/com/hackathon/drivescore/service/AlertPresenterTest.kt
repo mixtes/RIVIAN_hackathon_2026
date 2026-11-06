@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Wiring test: engine alert events reach the overlay state and the sound/notification outputs. */
@@ -19,6 +20,7 @@ class AlertPresenterTest {
         val calls = mutableListOf<String>()
         override fun play(kind: SoundKind) { calls += "play:$kind" }
         override fun speak(text: String) { calls += "speak:$text" }
+        override fun stopAudio() { calls += "stopAudio" }
         override fun notify(alert: DisplayedAlert) { calls += "notify:${alert.alertId}" }
         override fun cancel(alertId: String) { calls += "cancel:$alertId" }
         override fun cancelAll() { calls += "cancelAll" }
@@ -45,6 +47,31 @@ class AlertPresenterTest {
         running.value = false; runCurrent()
         advanceTimeBy(300); runCurrent()
         assertNull(p.current.value)
+        p.stop()
+    }
+
+    @Test fun `dismiss removes a latched alert at once, stops audio and sends alert dismiss`() = runTest {
+        val gateway = FakeGateway()
+        val out = RecordingOutput()
+        val p = AlertPresenter(gateway, out, SchedulerClock(this), backgroundScope, MutableStateFlow(false), MutableStateFlow(true))
+        p.start(); runCurrent()
+
+        gateway.alertFlow.emit(AlertEvent.Show(EngineAlert("L1", "s1", "EYES_CLOSED", AlertLevel.CRITICAL, "Wake up!", 0.5, null, requiresAck = true)))
+        runCurrent()
+        assertTrue(p.current.value!!.requiresAck)
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals("L1", p.current.value!!.alertId) // no ttl
+
+        out.calls.clear()
+        p.dismiss("L1"); runCurrent()
+        assertNull(p.current.value)
+        assertEquals(listOf("L1" to "s1"), gateway.dismissed)
+        assertEquals(listOf("stopAudio", "cancel:L1"), out.calls)
+
+        // The engine's alert.clear afterwards is a no-op.
+        gateway.alertFlow.emit(AlertEvent.Clear("L1")); runCurrent()
+        assertNull(p.current.value)
+        assertEquals(1, gateway.dismissed.size)
         p.stop()
     }
 }

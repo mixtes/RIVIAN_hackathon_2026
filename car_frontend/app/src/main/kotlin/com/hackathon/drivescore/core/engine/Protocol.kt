@@ -22,6 +22,7 @@ object EngineProtocol {
         const val DRIVE_RESULT_ACK = "drive.result.ack"
         const val ALERT = "alert"
         const val ALERT_CLEAR = "alert.clear"
+        const val ALERT_DISMISS = "alert.dismiss"
         const val ERROR = "error"
     }
 
@@ -114,10 +115,19 @@ data class AlertPayload(
     @SerialName("duration_so_far_s") val durationSoFarS: Double? = null,
     @SerialName("started_at") val startedAt: String? = null,
     @SerialName("ttl_s") val ttlS: Double? = null,
+    /** Latched alert: stays until the driver dismisses it. Absent/null = false (spec §8.3). */
+    @SerialName("requires_ack") val requiresAck: Boolean? = null,
 )
 
 @Serializable
 data class AlertClearPayload(@SerialName("alert_id") val alertId: String)
+
+/** App → Engine `alert.dismiss` (spec §8.3): the driver pressed Dismiss on a latched alert. Fire-and-forget. */
+@Serializable
+data class AlertDismissPayload(
+    @SerialName("alert_id") val alertId: String,
+    @SerialName("session_id") val sessionId: String?,
+)
 
 @Serializable
 data class ErrorPayload(

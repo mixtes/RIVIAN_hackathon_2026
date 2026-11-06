@@ -38,7 +38,8 @@ def default_engine_path() -> Path:
 class EngineInfo:
     path: Path
     module: ModuleType
-    version: str | None  # the engine's `__version__`, if it ever exposes one
+    version: str | None  # the engine's `__version__`, if it exposes one
+    detected_actions: tuple[str, ...] | None = None  # the engine's DETECTED_ACTIONS, if any
 
     def new_system(self) -> Any:
         """A fresh `SafetySystem` (AlertEngine + GameEngine)."""
@@ -80,4 +81,6 @@ def load_engine(path: str | Path | None = None) -> EngineInfo:
         raise EngineLoadError(f"{main_py} has no SafetySystem class")
 
     version = getattr(module, "__version__", None)
-    return EngineInfo(path=engine_dir, module=module, version=str(version) if version else None)
+    detected = getattr(module, "DETECTED_ACTIONS", None)
+    return EngineInfo(path=engine_dir, module=module, version=str(version) if version else None,
+                      detected_actions=tuple(str(a) for a in detected) if detected else None)

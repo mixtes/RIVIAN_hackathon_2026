@@ -19,6 +19,7 @@ DRIVE_RESULT = "drive.result"
 DRIVE_RESULT_ACK = "drive.result.ack"
 ALERT = "alert"
 ALERT_CLEAR = "alert.clear"
+ALERT_DISMISS = "alert.dismiss"  # app -> engine: the driver dismissed a latched alert
 ERROR = "error"
 
 # Error codes sent by the bridge
@@ -80,6 +81,11 @@ class DriveResultAckIn(_In):
     session_id: uuid.UUID
 
 
+class AlertDismissIn(_In):
+    alert_id: str
+    session_id: str | None = None
+
+
 # ---- Engine -> App payloads --------------------------------------------------------------
 
 class HelloOut(BaseModel):
@@ -101,6 +107,7 @@ class AlertOut(BaseModel):
     duration_so_far_s: float
     started_at: str
     ttl_s: int
+    requires_ack: bool = False  # latched: stays until the driver dismisses it in the app
 
 
 class AlertClearOut(BaseModel):
@@ -160,10 +167,13 @@ def summarize(msg: Message) -> str:
     t = msg.get("type", "?")
     p = msg.get("payload") or {}
     if t == ALERT:
+        ack = " [needs dismiss]" if p.get("requires_ack") else ""
         return (f"alert {p.get('type')} {p.get('level')} ({p.get('duration_so_far_s')}s) "
-                f"\"{p.get('message')}\" id={_short(p.get('alert_id'))}")
+                f"\"{p.get('message')}\" id={_short(p.get('alert_id'))}{ack}")
     if t == ALERT_CLEAR:
         return f"alert.clear id={_short(p.get('alert_id'))}"
+    if t == ALERT_DISMISS:
+        return f"alert.dismiss id={_short(p.get('alert_id'))}"
     if t == DRIVE_RESULT:
         counts = {m["type"]: m["count"] for m in p.get("mistakes", []) if m.get("count")}
         return f"drive.result session={_short(p.get('session_id'))} score={p.get('score')} {counts}"

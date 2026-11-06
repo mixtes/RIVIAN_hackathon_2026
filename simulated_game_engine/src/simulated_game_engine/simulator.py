@@ -44,15 +44,19 @@ class End:
 
 Step = Wait | Hold | End
 
-# ~2 minutes. Engine thresholds (RivianHackatonEngine defaults):
+# ~2 minutes. Engine thresholds (RivianHackatonEngine 0.3.0 defaults):
 #   phone_call:    VISUAL at 0 s, AUDIO at 3 s (HAPTIC at 6 s is not reached)
 #   eyes_off_road: AUDIO at 1 s, HAPTIC at 2.5 s, CRITICAL at 4 s
+#   eyes_closed:   CRITICAL at 0.5 s, LATCHED: stays after the eyes open until the driver
+#                  presses Dismiss in the app (or the drive ends)
 DEMO_SCENARIO: tuple[Step, ...] = (
     Wait(15.0),
     Hold("phone_call", 4.5),       # VISUAL -> AUDIO -> clear
     Wait(20.0),
     Hold("eyes_off_road", 5.0),    # AUDIO -> HAPTIC -> CRITICAL -> clear
-    Wait(75.5),                    # clean stretch
+    Wait(15.0),
+    Hold("eyes_closed", 2.0),      # CRITICAL, needs Dismiss (no clear when the eyes open)
+    Wait(58.5),                    # clean stretch
     End(),
 )
 SCENARIOS: dict[str, Sequence[Step]] = {"demo": DEMO_SCENARIO}
@@ -88,6 +92,12 @@ class Simulator:
 
     async def end(self) -> None:
         await self.dispatch(self.core.end_session())
+
+    async def dismiss_all(self) -> int:
+        """Dismiss every latched alert. Returns how many were dismissed."""
+        msgs = self.core.dismiss_all()
+        await self.dispatch(msgs)
+        return sum(1 for m in msgs if m["type"] == p.ALERT_CLEAR)
 
     def pulse(self, action: str, seconds: float) -> asyncio.Task[None]:
         """Start `action` now (raises if no session) and stop it after `seconds`."""

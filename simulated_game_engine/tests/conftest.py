@@ -12,6 +12,10 @@ from simulated_game_engine.engine_loader import EngineInfo, load_engine
 
 ENGINE_VERSION = "rhe/unknown+bridge-test"
 
+# The engine's 8 canonical actions, sorted (hello.supported_actions without DETECTED_ACTIONS).
+ALL_ACTIONS = ["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL",
+               "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"]
+
 
 @pytest.fixture(scope="session")
 def engine() -> EngineInfo:

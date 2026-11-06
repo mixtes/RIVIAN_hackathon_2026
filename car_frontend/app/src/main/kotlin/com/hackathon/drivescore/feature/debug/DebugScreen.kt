@@ -107,11 +107,19 @@ class DebugViewModel @Inject constructor(
     fun drop() = engine.dropConnection()
 
     fun testAlert(level: AlertLevel) = viewModelScope.launch {
-        val id = UUID.randomUUID().toString()
+        val id = SwitchingEngineGateway.DEBUG_ALERT_PREFIX + UUID.randomUUID()
         val type = if (level == AlertLevel.CRITICAL || level == AlertLevel.HAPTIC) "EYES_OFF_ROAD" else "PHONE_CALL"
         gateway.debugAlerts.emit(AlertEvent.Show(EngineAlert(id, null, type, level, "Test ${level.name} alert", 1.0, null)))
         delay(5_000)
         gateway.debugAlerts.emit(AlertEvent.Clear(id))
+    }
+
+    /** A latched EYES_CLOSED CRITICAL alert: stays until Dismiss (or the session ends), like the engine's. */
+    fun testLatchedAlert() = viewModelScope.launch {
+        val id = SwitchingEngineGateway.DEBUG_ALERT_PREFIX + UUID.randomUUID()
+        gateway.debugAlerts.emit(
+            AlertEvent.Show(EngineAlert(id, null, "EYES_CLOSED", AlertLevel.CRITICAL, "Wake up! Pull over and rest.", 0.5, null, requiresAck = true)),
+        )
     }
 
     /** Simulates a drive.result for the active session (or a fresh one for the unlocked driver). */
@@ -183,6 +191,7 @@ fun DebugScreen(onBack: () -> Unit, vm: DebugViewModel = hiltViewModel()) {
             VSpace(Space.L)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.S), verticalArrangement = Arrangement.spacedBy(Space.S)) {
                 AlertLevel.entries.forEach { l -> SecondaryButton("Alert ${l.name}", { vm.testAlert(l) }) }
+                SecondaryButton("Alert latched (Dismiss)", { vm.testLatchedAlert() })
                 SecondaryButton("Simulate drive.result", { vm.simulateResult() })
                 SecondaryButton("Force sync", vm::forceSync)
                 SecondaryButton("Drop engine connection", vm::drop)

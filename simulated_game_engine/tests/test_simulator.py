@@ -56,15 +56,18 @@ async def test_demo_scenario_sequence(core, clock, speed) -> None:
     assert await sim.run_scenario(DEMO_SCENARIO, speed=speed) is True
 
     alerts = [(m["payload"]["type"], m["payload"]["level"]) for m in of_type(ft.sent, p.ALERT)]
-    assert alerts == [
+    distinct = [a for i, a in enumerate(alerts) if i == 0 or a != alerts[i - 1]]  # no keep-alives
+    assert distinct == [
         ("PHONE_CALL", "VISUAL"), ("PHONE_CALL", "AUDIO"),
         ("EYES_OFF_ROAD", "AUDIO"), ("EYES_OFF_ROAD", "HAPTIC"), ("EYES_OFF_ROAD", "CRITICAL"),
+        ("EYES_CLOSED", "CRITICAL"),                   # latched, kept alive until the end
     ]
-    assert len(of_type(ft.sent, p.ALERT_CLEAR)) == 2
+    # phone + eyes-off-road clear when they stop; the undismissed latched one at drive end
+    assert len(of_type(ft.sent, p.ALERT_CLEAR)) == 3
     assert ft.sent[-1]["type"] == p.DRIVE_RESULT
     result = ft.sent[-1]["payload"]
     counts = {m["type"]: m["count"] for m in result["mistakes"] if m["count"]}
-    assert counts == {"PHONE_CALL": 1, "EYES_OFF_ROAD": 1}
+    assert counts == {"PHONE_CALL": 1, "EYES_OFF_ROAD": 1, "EYES_CLOSED": 1}
     assert 0 < result["score"] < 100
     assert core.session is None
     assert clock.monotonic() - t0 == pytest.approx(scenario_duration(DEMO_SCENARIO, speed), abs=0.5)

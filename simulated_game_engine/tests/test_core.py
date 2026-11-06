@@ -9,7 +9,7 @@ import pytest
 from simulated_game_engine import protocol as p
 from simulated_game_engine.core import BridgeCore, NoActiveSessionError
 
-from .conftest import ENGINE_VERSION, inbound, of_type, run_for, start_msg
+from .conftest import ALL_ACTIONS, ENGINE_VERSION, inbound, of_type, run_for, start_msg
 
 
 def _start(core: BridgeCore, sid: str | None = None) -> str:
@@ -27,7 +27,15 @@ def test_hello_reply(core) -> None:
     assert reply["ts"].endswith("Z")
     uuid.UUID(reply["msg_id"])
     assert reply["payload"] == {"engine_version": ENGINE_VERSION, "active_session_id": None,
-                                "supported_actions": ["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"]}
+                                "supported_actions": ALL_ACTIONS}
+
+
+def test_hello_reports_detected_actions_when_the_engine_declares_them(engine, clock) -> None:
+    core = BridgeCore(engine.new_system(), clock, engine_version="v",
+                      detected_actions=("phone_use", "PHONE_CALL"))
+    [reply] = core.handle(inbound(p.HELLO, protocol=1))
+    assert reply["payload"]["supported_actions"] == ["PHONE_CALL", "PHONE_USE"]
+    assert core.configured_actions == [a.lower() for a in ALL_ACTIONS]  # simulator: all 8
 
 
 def test_hello_reports_active_session(core) -> None:
@@ -225,7 +233,7 @@ def test_unconfigured_action_is_forwarded_and_ignored(core, clock) -> None:
     assert "SNEEZING" not in {m["type"] for m in result["mistakes"]}
 
 
-def test_simultaneous_escalations_all_delivered_in_per_action_mode(core, clock) -> None:
+def test_simultaneous_escalations_are_all_delivered(core, clock) -> None:
     _start(core)
     core.set_action("phone_call", True)
     core.set_action("eyes_off_road", True)
@@ -236,16 +244,103 @@ def test_simultaneous_escalations_all_delivered_in_per_action_mode(core, clock) 
     assert ("PHONE_CALL", "AUDIO") in levels
 
 
-def test_engine_tick_mode_loses_simultaneous_escalations(engine, clock) -> None:
-    """Documents the engine limitation that `per-action` mode works around."""
-    core = BridgeCore(engine.new_system(), clock, engine_version="v", tick_mode="engine")
+def test_same_tick_escalations_of_two_actions_both_arrive(core, clock) -> None:
     _start(core)
     core.set_action("phone_call", True)
     core.set_action("eyes_off_road", True)
     clock.advance(3.0)                       # phone AUDIO (3 s) and eyes HAPTIC (2.5 s) due
     out = core.tick()
-    assert [(m["payload"]["type"], m["payload"]["level"]) for m in out] == [
-        ("EYES_OFF_ROAD", "HAPTIC")]
+    assert sorted((m["payload"]["type"], m["payload"]["level"]) for m in out) == [
+        ("EYES_OFF_ROAD", "HAPTIC"), ("PHONE_CALL", "AUDIO")]
+
+
+def test_alert_ids_come_from_the_engine(core) -> None:
+    _start(core)
+    [msg] = core.set_action("phone_call", True)
+    [engine_alert] = core.system.alerts.active_alerts()
+    assert msg["payload"]["alert_id"] == engine_alert.alert_id
+    assert msg["payload"]["requires_ack"] is False
+
+
+# ---- latched alerts + alert.dismiss --------------------------------------------------------
+
+def _dismiss(core: BridgeCore, alert_id: str, session_id: str | None = None) -> list:
+    return core.handle(inbound(p.ALERT_DISMISS, alert_id=alert_id, session_id=session_id))
+
+
+def test_latched_alert_stays_after_the_action_ends_until_dismissed(core, clock) -> None:
+    sid = _start(core)
+    core.set_action("eyes_closed", True)
+    [alert] = of_type(run_for(core, clock, 1.0), p.ALERT)     # CRITICAL at 0.5 s
+    pa = alert["payload"]
+    assert (pa["type"], pa["level"], pa["requires_ack"]) == ("EYES_CLOSED", "CRITICAL", True)
+    assert pa["message"]
+
+    assert core.set_action("eyes_closed", False) == []       # eyes open: no clear (latched)
+    refreshes = of_type(run_for(core, clock, 12.0), p.ALERT)
+    assert len(refreshes) == 2                               # keep-alive continues
+    assert {m["payload"]["alert_id"] for m in refreshes} == {pa["alert_id"]}
+    assert all(m["payload"]["requires_ack"] for m in refreshes)
+
+    out = _dismiss(core, pa["alert_id"], sid)
+    assert [m["type"] for m in out] == [p.ALERT_CLEAR]
+    assert out[0]["payload"] == {"alert_id": pa["alert_id"]}
+    assert run_for(core, clock, 10.0) == []                  # gone: no more refreshes
+    assert _dismiss(core, pa["alert_id"], sid) == []         # repeated dismiss: no-op
+
+
+def test_dismiss_while_eyes_still_closed_starts_a_new_occurrence(core, clock) -> None:
+    _start(core)
+    core.set_action("eyes_closed", True)
+    [first] = of_type(run_for(core, clock, 1.0), p.ALERT)
+    out = core.dismiss(first["payload"]["alert_id"])
+    assert [m["type"] for m in out] == [p.ALERT_CLEAR]
+    [again] = of_type(run_for(core, clock, 1.0), p.ALERT)   # rings again 0.5 s later
+    assert again["payload"]["requires_ack"] is True
+    assert again["payload"]["alert_id"] != first["payload"]["alert_id"]
+
+
+def test_dismiss_is_ignored_for_non_latched_unknown_or_foreign_alerts(core, clock) -> None:
+    _start(core)
+    [phone] = core.set_action("phone_call", True)
+    assert _dismiss(core, phone["payload"]["alert_id"]) == []     # not latched
+    assert _dismiss(core, "no-such-id") == []
+    core.set_action("eyes_closed", True)
+    [latched] = of_type(run_for(core, clock, 1.0), p.ALERT)
+    lid = latched["payload"]["alert_id"]
+    assert _dismiss(core, lid, session_id=str(uuid.uuid4())) == []  # other session
+    assert [m["type"] for m in _dismiss(core, lid, session_id=None)] == [p.ALERT_CLEAR]
+
+
+def test_dismiss_without_a_session_and_bad_payload(core) -> None:
+    assert _dismiss(core, "x") == []                         # late dismiss: silently ignored
+    [err] = core.handle(inbound(p.ALERT_DISMISS))            # alert_id missing
+    assert err["payload"]["code"] == p.BAD_REQUEST
+
+
+def test_latched_alert_is_resent_on_resume_and_cleared_at_session_end(core, clock) -> None:
+    sid = _start(core)
+    core.set_action("eyes_closed", True)
+    run_for(core, clock, 1.0)
+    core.set_action("eyes_closed", False)
+    out = core.handle(start_msg(sid))                        # reconnect
+    assert [m["type"] for m in out] == [p.SESSION_ACK, p.ALERT]
+    assert out[1]["payload"]["requires_ack"] is True
+    out = core.end_session()
+    assert [m["type"] for m in out] == [p.ALERT_CLEAR, p.DRIVE_RESULT]
+    counts = {m["type"]: m["count"] for m in out[1]["payload"]["mistakes"] if m["count"]}
+    assert counts == {"EYES_CLOSED": 1}                      # scored from the real 1 s
+
+
+def test_dismiss_all_dismisses_only_latched_alerts(core, clock) -> None:
+    _start(core)
+    core.set_action("phone_call", True)
+    core.set_action("eyes_closed", True)
+    run_for(core, clock, 1.0)
+    out = core.dismiss_all()
+    [clear] = of_type(out, p.ALERT_CLEAR)
+    assert [d for d in core.status().alerts.values()] == ["PHONE_CALL VISUAL"]
+    assert clear["payload"]["alert_id"] not in core.status().alerts
 
 
 def test_end_session_clears_alerts_then_sends_result(core, clock) -> None:
@@ -263,7 +358,7 @@ def test_end_session_clears_alerts_then_sends_result(core, clock) -> None:
     # still-active action is closed at end of drive: 8 s phone call = 1 + 0.5*8 = 5 pts
     assert result["score"] == 95.0
     assert result["events"][0]["duration_s"] == 8.0
-    assert not core.active_actions and core.status().alert_ids == {}
+    assert not core.active_actions and core.status().alerts == {}
 
 
 

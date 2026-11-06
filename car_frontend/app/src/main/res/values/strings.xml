@@ -5,6 +5,8 @@
     <string name="service_running">Driver monitoring is active</string>
     <string name="engine_not_responding">Engine not responding</string>
     <string name="result_invalid">Result invalid</string>
+    <string name="alert_dismiss">Dismiss</string>
+    <string name="alert_dismiss_description">Dismiss alert: %1$s</string>
     <string name="nav_drive">Drive</string>
     <string name="nav_history">History</string>
     <string name="nav_stats">Stats</string>

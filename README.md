@@ -103,8 +103,8 @@ The emulator reaches the host as `10.0.2.2`. The debug build already points at `
 1. **In the car app:** choose **Create account**, or **Sign in** with `demo` / `demo-password-123`. Then choose a PIN. The PIN stays on the car and is never sent to the server.
 2. **Start the drive.** In the `bridge>` terminal, `status` should now show a connected client and an active session.
 3. **Act as the driver** in the `bridge>` terminal:
-   - `scenario demo fast`: a scripted drive. A phone call escalates VISUAL → AUDIO, then eyes off road escalates AUDIO → HAPTIC → CRITICAL. The drive then ends by itself.
-   - Or by hand: `start phone_call` … `stop phone_call`, `pulse eyes_off_road 5`, `auto on` (random behaviour).
+   - `scenario demo fast`: a scripted drive. A phone call escalates VISUAL → AUDIO, eyes off road escalates AUDIO → HAPTIC → CRITICAL, then eyes closed (drowsiness) raises a full-screen alarm with a **Dismiss** button that stays until you press it. The drive then ends by itself.
+   - Or by hand: `start phone_call` … `stop phone_call`, `pulse eyes_off_road 5`, `pulse eyes_closed 2` (then press Dismiss in the app, or type `dismiss`), `auto on` (random behaviour).
    - `end` ends the drive. The car shows the score and the mistakes and uploads the drive to the backend.
 4. Open **History**, **Stats** and **Leaderboard** in the app.
 
@@ -142,4 +142,4 @@ cd car_frontend && ./gradlew :app:testDebugUnitTest  # 57 JVM unit tests (JAVA_H
 | Drives stay "pending sync" | The backend isn't running. Check `curl localhost:8000/health`. They upload automatically once it's back. |
 | Backend: connection refused to Postgres | Start Postgres (step 3.1). Check that `.env` uses `@localhost:5432`, not `@db:5432`. |
 | Port 8000, 8765 or 5432 already in use | `lsof -nP -iTCP:<port> -sTCP:LISTEN` shows which process holds it. |
-| Demo shows only 2 alert types | Expected. The engine currently detects only `phone_call` and `eyes_off_road`. |
+| Drowsiness alarm won't go away | Expected: `eyes_closed` is latched. Press **Dismiss** in the app (or type `dismiss` in the bridge CLI). Ending the drive clears it too. |

@@ -17,7 +17,7 @@ from simulated_game_engine.clock import SystemClock
 from simulated_game_engine.core import BridgeCore
 from simulated_game_engine.server import REPLACED_CLOSE_CODE, BridgeServer
 
-from .conftest import ENGINE_VERSION, inbound
+from .conftest import ALL_ACTIONS, ENGINE_VERSION, inbound
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ async def test_full_round_trip(bridge: BridgeServer) -> None:
     async with connect(url(bridge)) as ws:
         h = await hello(ws)
         assert h["payload"]["active_session_id"] is None
-        assert h["payload"]["supported_actions"] == ["EATING_DRINKING", "EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_CALL", "PHONE_USE", "SMOKING", "YAWN"]
+        assert h["payload"]["supported_actions"] == ALL_ACTIONS
 
         await send(ws, p.SESSION_START, session_id=sid, user_id=uid, display_name="Mihajlo",
                    car_id="car-1", started_at="2026-11-06T08:00:00Z")
