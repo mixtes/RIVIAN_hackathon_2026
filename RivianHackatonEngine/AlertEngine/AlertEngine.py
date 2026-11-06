@@ -21,6 +21,7 @@ Usage:
     alert = engine.process_event("PHONE_CALL", is_active=False, timestamp=5.0)
 """
 
+
 from __future__ import annotations
 
 import time
