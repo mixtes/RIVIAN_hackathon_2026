@@ -9,3 +9,4 @@ out*/
 *.csv
 *.pptx
 .DS_Store
+*.task

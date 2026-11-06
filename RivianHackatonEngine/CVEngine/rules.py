@@ -13,7 +13,8 @@ LAP_MIN, PITCH_MIN = 0.85, 0.17     # lap / head-down thresholds (tuned on ONE c
 MIN_DUR = {'PHONE_AT_EAR': 1.0, 'PHONE_IN_HAND': 1.0, 'HEAD_DOWN_HAND_IN_LAP': 1.0,
            'HANDS_OFF_WHEEL': 1.0, 'ONE_HAND_ON_WHEEL': 2.0}     # seconds before an alert is raised
 # ---------------------------------------------------------------------------
-NOSE, LEAR, REAR, LSHO, RSHO, LWR, RWR = 0, 3, 4, 5, 6, 9, 10
+HAND_EXT = 0.30            # hand centre = wrist + HAND_EXT * (wrist - elbow); the wrist is rarely at the rim
+NOSE, LEAR, REAR, LSHO, RSHO, LELB, RELB, LWR, RWR = 0, 3, 4, 5, 6, 7, 8, 9, 10
 
 def load(cache):
     with np.load(cache) as d:
@@ -52,6 +53,16 @@ def load_wheel(cache, frame_size=None):
                          'no greater than the smaller frame dimension.')
     return wheel, int(margin)
 
+def hand_points(kp, ext=HAND_EXT):
+    """Estimated hand centres from pose keypoints: the wrist extended along the forearm.
+    Falls back to the plain wrist when the elbow is not reliable. Pose-only proxy, not hand tracking."""
+    pts = []
+    for wrist, elbow in ((LWR, LELB), (RWR, RELB)):
+        if kp[wrist,2] < KP_CONF: continue
+        w = kp[wrist,:2]
+        pts.append(w + ext * (w - kp[elbow,:2]) if kp[elbow,2] >= KP_CONF else w)
+    return pts
+
 def on_wheel(pt, wheel, margin):
     return cv2.pointPolygonTest(wheel.reshape(-1,1,2), (float(pt[0]), float(pt[1])), True) >= -margin
 
@@ -59,7 +70,7 @@ def frame_flags(kp, phones, wheel, margin):
     if np.isnan(kp[:,0]).all(): return None
     ok = lambda i: kp[i,2] >= KP_CONF
     sw = np.hypot(*(kp[LSHO,:2]-kp[RSHO,:2])) if ok(LSHO) and ok(RSHO) else 350.0   # shoulder width = scale
-    wr = [kp[i,:2] for i in (LWR, RWR) if ok(i)]
+    wr = hand_points(kp)
     ears = [kp[i,:2] for i in (LEAR, REAR, NOSE) if ok(i)]
     n_wheel = sum(on_wheel(w, wheel, margin) for w in wr)
     wrist_ear = any(np.hypot(*(w-e)) < 0.65*sw and not on_wheel(w, wheel, margin) for w in wr for e in ears)

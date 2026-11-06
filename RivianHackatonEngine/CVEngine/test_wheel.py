@@ -130,6 +130,86 @@ class WheelCalibrationTests(unittest.TestCase):
             runpy.run_path(str(Path(__file__).with_name('render.py')), run_name='__main__')
 
 
+class WheelRoiTests(unittest.TestCase):
+    SIZE = (1920, 1536)
+
+    def candidates(self, polygon, n=4, conf=0.1):
+        mask = np.zeros((self.SIZE[1], self.SIZE[0]), np.uint8)
+        cv2.fillPoly(mask, [polygon], 1)
+        x, y, w, h = cv2.boundingRect(polygon)
+        return [(conf, mask, [x, y, x + w, y + h])] * n
+
+    def test_prior_is_bottom_right_and_ellipse_like(self):
+        prior = auto_wheel.prior_polygon(self.SIZE)
+        cx, cy = prior.mean(axis=0)
+        self.assertGreater(cx, 0.62 * self.SIZE[0])
+        self.assertGreater(cy, 0.72 * self.SIZE[1])
+        self.assertAlmostEqual(auto_wheel.polygon_iou(prior, prior, self.SIZE), 1.0)
+
+    def test_low_confidence_detection_agreeing_with_prior_is_accepted(self):
+        polygon, info = auto_wheel.resolve_wheel(
+            self.candidates(auto_wheel.prior_polygon(self.SIZE)), self.SIZE)
+        self.assertEqual(info['source'], 'detected')
+        self.assertGreater(info['prior_iou'], 0.9)
+
+    def test_detection_far_from_prior_is_rejected_unless_fallback_requested(self):
+        far = auto_wheel.ellipse_polygon((700, 500), (200, 300), 0)
+        with self.assertRaisesRegex(ValueError, 'disagrees'):
+            auto_wheel.resolve_wheel(self.candidates(far), self.SIZE)
+        polygon, info = auto_wheel.resolve_wheel(self.candidates(far), self.SIZE, prior_fallback=True)
+        self.assertEqual(info['source'], 'prior')
+        np.testing.assert_array_equal(polygon, auto_wheel.prior_polygon(self.SIZE))
+
+    def test_no_candidates_fails_strict_and_uses_labelled_prior_when_allowed(self):
+        with self.assertRaisesRegex(ValueError, 'Need at least'):
+            auto_wheel.resolve_wheel([], self.SIZE)
+        _, info = auto_wheel.resolve_wheel([], self.SIZE, prior_fallback=True)
+        self.assertEqual(info['source'], 'prior')
+
+    def test_candidate_gate_rejects_crop_filling_and_far_away_masks(self):
+        h, w = 200, 200
+        frame = np.zeros((h, w, 3), np.uint8)
+
+        def predict(mask_polygon):
+            box = Mock()
+            box.xyxy = [[0, 0, 5, 5]]
+            box.conf.item.return_value = 0.5
+            model = Mock()
+            model.predict.return_value = [SimpleNamespace(
+                masks=SimpleNamespace(xy=[np.array(mask_polygon, np.float32)]), boxes=[box])]
+            return model
+
+        x0, y0 = auto_wheel.roi_origin(w, h)
+        cw, ch = w - x0, h - y0
+        whole = [[0, 0], [cw, 0], [cw, ch], [0, ch]]             # fills the whole crop
+        self.assertEqual(auto_wheel.wheel_candidates(predict(whole), frame), [])
+        top_left = [[0, 0], [30, 0], [30, 30], [0, 30]]          # centroid outside the prior box
+        self.assertEqual(auto_wheel.wheel_candidates(predict(top_left), frame), [])
+        centre = [[cw * .45, ch * .35], [cw * .85, ch * .35], [cw * .85, ch * .75], [cw * .45, ch * .75]]
+        self.assertEqual(len(auto_wheel.wheel_candidates(predict(centre), frame)), 1)
+
+    def test_calibrator_locks_after_warmup_without_seeking(self):
+        size = self.SIZE
+        candidate = self.candidates(auto_wheel.prior_polygon(size), n=1)[0]
+        calibrator = auto_wheel.WheelCalibrator(model=Mock(), warmup=4)
+        frame = np.zeros((size[1], size[0], 3), np.uint8)
+        with patch.object(auto_wheel, 'wheel_candidates', return_value=[candidate]):
+            states = [calibrator.add_frame(frame) for _ in range(4)]
+        self.assertEqual(states, ['collecting'] * 3 + ['locked'])
+        self.assertEqual(calibrator.info['source'], 'detected')
+        self.assertGreater(calibrator.margin, 0)
+        self.assertEqual(calibrator.add_frame(frame), 'locked')   # no further inference
+
+    def test_calibrator_reports_failure_when_fallback_is_disabled(self):
+        calibrator = auto_wheel.WheelCalibrator(model=Mock(), warmup=3, prior_fallback=False)
+        frame = np.zeros((100, 100, 3), np.uint8)
+        with patch.object(auto_wheel, 'wheel_candidates', return_value=[]):
+            for _ in range(3):
+                calibrator.add_frame(frame)
+        self.assertEqual(calibrator.status, 'failed')
+        self.assertIn('Need at least', calibrator.error)
+
+
 class WheelConsensusTests(unittest.TestCase):
     def test_boxes_without_masks_never_become_a_wheel_zone(self):
         capture = Mock()
