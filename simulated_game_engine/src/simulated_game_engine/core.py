@@ -295,9 +295,10 @@ class BridgeCore:
 
     def _alert(self, alert: Any) -> p.Message:
         assert self.session is not None
-        state = self._alerts.get(alert.action)
+        action = alert.action.strip().lower()   # bridge keys are lower-case; engine may differ
+        state = self._alerts.get(action)
         if state is None:
-            state = self._alerts[alert.action] = _AlertState(alert_id=str(uuid.uuid4()))
+            state = self._alerts[action] = _AlertState(alert_id=str(uuid.uuid4()))
         level = alert.level.name
         state.last = p.AlertOut(
             alert_id=state.alert_id,
