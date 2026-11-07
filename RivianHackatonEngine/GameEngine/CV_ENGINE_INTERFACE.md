@@ -11,7 +11,7 @@
 
 ```
  CVEngine (camera, models, rules)
-        │  every analyzed frame:  on_frame(timestamp, flags)        flags = 1 byte
+        │  every analyzed frame:  on_frame(timestamp, flags, occupants)   flags = 1 byte, occupants = people count
         ▼
  ┌─────────────── SafetySystem (main.py) ───────────────────────────────────────┐
  │  edge detector: compares this frame's flags with the previous frame's flags   │
@@ -36,6 +36,9 @@ CVEngine sends **one record per analyzed frame**:
 |---|---|---|
 | `timestamp` | float, seconds | Monotonic, on the **same clock as `start_drive` / `end_drive`** timestamps. For a video replay it is the video time. Non-decreasing. Not a fixed rate: CVEngine may analyze every Nth camera frame (about 6 to 15 records per second today), so never assume a spacing. |
 | `flags` | unsigned 8-bit integer, 0 to 255 | The byte in §3. |
+| `occupants` | integer, 0 to 15 | How many people CVEngine sees in the car, front **and rear** seats, driver included. See §3.1. |
+
+On the wire (the stdout stream of `live.py --stream`) one record is one line: `timestamp,flags,occupants`, for example `12.346,96,3` (12.346 s, hands off and eyes off road, three people in the car).
 
 CVEngine sends nothing for frames it did not analyze. A missing record means "no new information", not "all clear" (see §4.5).
 
@@ -47,7 +50,7 @@ Most significant bit first. **A higher bit is a higher priority**, so a plain nu
 
 | Bit | Mask | Meaning | Canonical action key | CVEngine status |
 |---|---|---|---|---|
-| 7 | `0x80` | fell asleep | `EYES_CLOSED` (drowsiness is reported as `EYES_CLOSED`, see `CAR_FRONTEND_INTERFACE.md` §2) | **not implemented yet** |
+| 7 | `0x80` | fell asleep or unresponsive: eyes closed for longer than a blink, **or** posture slumped (head dropped to or below the shoulder line, e.g. fainted) | `EYES_CLOSED` (drowsiness is reported as `EYES_CLOSED`, see `CAR_FRONTEND_INTERFACE.md` §2) | **implemented** (on by default; `--no-sleep-bit` turns it off) |
 | 6 | `0x40` | looked off the road | `EYES_OFF_ROAD` | **not implemented yet** |
 | 5 | `0x20` | hands off the steering wheel | `HANDS_OFF_WHEEL` | **implemented** |
 | 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | live (`live_phone.PhoneMonitor` in `live.py`); confirmed state: about 1 s to switch on, about 3 s to switch off |
@@ -58,6 +61,13 @@ Notes:
 - **Reserved bits:** CVEngine sends them as 0. The engine side **masks them off and ignores them** (`flags & 0xF0`), so a future bit never breaks the old engine and a bad value never raises.
 - `YAWN`, `EATING_DRINKING` and `SMOKING` have no bit. They remain simulator-only stubs.
 - Examples: `0x20` = hands off only. `0x30` = hands off and phone. `0x00` = nothing detected.
+
+### 3.1 The occupant count
+
+- **What it is:** the number of people CVEngine detects in the cabin, smoothed over about 3 s so a person who is hidden for a moment does not make it flicker. It is counted per zone (driver, front passenger, rear seats) inside CVEngine, and only the total crosses this interface.
+- **It is a lower bound.** A person hidden by a seat or by another person, lying down, or outside the camera's view is not counted. Like a `0` bit (§4.4), a count that is too low can mean "could not see", so never treat it as proof that nobody else is in the car.
+- **It is not a safety bit.** It never raises an alert or changes a score by itself. It is context for the engines (for example, passengers present, or a forgotten child or pet check later). The engines may ignore it.
+- **Rules:** non-negative integer, capped at 15. A value of `0` can also mean "the camera sees nobody or nothing". It changes slowly (the smoothing holds it for seconds), so engines can read it once per record without smoothing it again.
 
 ---
 
@@ -76,13 +86,13 @@ Notes:
 New method in `main.py`:
 
 ```python
-def on_frame(self, timestamp: float, flags: int) -> List[AlertUpdate]:
+def on_frame(self, timestamp: float, flags: int, occupants: Optional[int] = None) -> List[AlertUpdate]:
     """One analyzed frame from CVEngine. Returns the AlertEngine's updates, like on_event."""
 ```
 
 Rules:
 
-1. **Validate, never raise.** If `flags` is not an `int` in `0..255` (a `bool` doesn't count), or `timestamp` is not a finite number, or `timestamp` is **smaller than the previous record's**, ignore the record and return `[]`.
+1. **Validate, never raise.** If `flags` is not an `int` in `0..255` (a `bool` doesn't count), or `timestamp` is not a finite number, or `timestamp` is **smaller than the previous record's**, ignore the record and return `[]`. `occupants` is optional: if it is `None`, not an `int` in `0..15`, or a `bool`, the record is **not** rejected. The last valid count is kept and the flags are processed as usual.
 2. **Mask:** `flags &= 0xF0`.
 3. **Edge detection per bit.** Keep `previous_flags` (it is `0` after `start_drive`, after `end_drive` and at construction). For each bit whose value differs from `previous_flags`:
    - `0 → 1`: `on_event(ACTION, True, timestamp)`
@@ -90,8 +100,9 @@ Rules:
    Bits that did not change produce **no call**. (The engines accept repeated `True`, so sending every frame would also be correct. Edge-only keeps the engines quiet and cheap.)
 4. **Order inside one record:** first all `1 → 0` calls, then all `0 → 1` calls. Within each group, highest bit first. This puts a clear before a new alert, as `AlertEngine/CAR_FRONTEND_INTERFACE.md` §5 asks.
 5. **Return value:** the concatenated updates of those `on_event` calls, in call order.
-6. `on_frame` feeds the GameEngine through `on_event`, exactly like any other event source. `on_event` stays available for the simulator.
-7. `tick_all(timestamp)` is still called by the bridge about every 100 ms and does the escalations. `on_frame` does **not** need to tick.
+6. **Occupants:** store the latest valid `occupants` as `SafetySystem.occupants` (read-only, `0` after `start_drive`). It produces no `on_event` call and no alert. See §3.1.
+7. `on_frame` feeds the GameEngine through `on_event`, exactly like any other event source. `on_event` stays available for the simulator.
+8. `tick_all(timestamp)` is still called by the bridge about every 100 ms and does the escalations. `on_frame` does **not** need to tick.
 
 ---
 
@@ -124,6 +135,7 @@ Timestamps are seconds. `S` is a fresh `SafetySystem` after `start_drive(0.0)`. 
 8. `(0.0, 0x80)`, `(3.0, 0x00)` → an `EYES_CLOSED` occurrence of 3.0 s, scored by how long the bit was `1`, not by any alarm.
 9. Same records twice → identical `DriveReport` (deterministic). `0 <= score <= 100`.
 10. `end_drive()` without `start_drive()` after some `on_frame` calls → a valid report, no exception.
+11. Records with `occupants` `3`, then `0`, then missing, then `99` → no effect on the score or the occurrences: the same records without `occupants` give an identical `DriveReport`.
 
 ---
 

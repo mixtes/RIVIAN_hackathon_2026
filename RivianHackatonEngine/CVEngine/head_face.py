@@ -35,6 +35,8 @@ class FaceMeasure:
     gaze_down: float                # 0..1 average of eyeLookDownLeft/Right
     gaze_up: float                  # 0..1 average of eyeLookUpLeft/Right
     blink: float                    # 0..1 average of eyeBlinkLeft/Right; near 1 = eyes closed
+    ear_l: Optional[float] = None   # eye aspect ratio from the eyelid landmarks (about 0.25-0.4 open, <0.1 closed)
+    ear_r: Optional[float] = None
 
 
 def ensure_model(path=MODEL_PATH):
@@ -51,6 +53,19 @@ def load_landmarker(path=None):
         output_face_blendshapes=True, output_facial_transformation_matrixes=True,
         min_face_detection_confidence=0.2, min_face_presence_confidence=0.2)
     return vision.FaceLandmarker.create_from_options(options)
+
+
+# MediaPipe face-mesh eyelid points: corner, upper lid x2, corner, lower lid x2 (EAR = lid gaps / eye width)
+EYE_R = (33, 160, 158, 133, 153, 144)
+EYE_L = (362, 385, 387, 263, 373, 380)
+
+
+def eye_aspect_ratio(pts, idx):
+    """pts: (N,2+) landmark pixels. Geometric eye openness: independent of the blendshape model, so the two can
+    confirm each other. Scale-free, but it depends on the view angle, so the caller normalises per driver."""
+    d = lambda a, b: float(np.linalg.norm(np.asarray(pts[idx[a]][:2]) - np.asarray(pts[idx[b]][:2])))
+    width = d(0, 3)
+    return (d(1, 5) + d(2, 4)) / (2 * width) if width > 1e-6 else None
 
 
 def euler_from_matrix(matrix):
@@ -96,5 +111,13 @@ class FaceHead:
         yaw, pitch, roll = euler_from_matrix(result.facial_transformation_matrixes[0])
         scores = {c.category_name: c.score for c in (result.face_blendshapes[0] if result.face_blendshapes else [])}
         mean = lambda a, b: (scores.get(a, 0.0) + scores.get(b, 0.0)) / 2
+        h, w = y1 - y0, x1 - x0
+        try:                                  # the eye openness is extra evidence: never let it break the head angles
+            pts = [(l.x * w, l.y * h) for l in result.face_landmarks[0]]
+            ear_l, ear_r = (eye_aspect_ratio(pts, EYE_L), eye_aspect_ratio(pts, EYE_R)) if len(pts) > 380 \
+                else (None, None)
+        except (TypeError, AttributeError, IndexError):
+            ear_l = ear_r = None
         return FaceMeasure(yaw, pitch, roll, mean('eyeLookDownLeft', 'eyeLookDownRight'),
-                           mean('eyeLookUpLeft', 'eyeLookUpRight'), mean('eyeBlinkLeft', 'eyeBlinkRight'))
+                           mean('eyeLookUpLeft', 'eyeLookUpRight'), mean('eyeBlinkLeft', 'eyeBlinkRight'),
+                           ear_l, ear_r)

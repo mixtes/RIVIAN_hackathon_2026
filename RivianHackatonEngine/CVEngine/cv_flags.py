@@ -2,7 +2,7 @@
 that smooths each bit. Contract: RivianHackatonEngine/AlertEngine/CV_ENGINE_INTERFACE.md (sections 2 to 4).
 
 Bit layout, most significant bit first; a higher bit is a higher priority:
-  0x80 fell asleep          (not implemented yet)
+  0x80 fell asleep / unresponsive: eyes closed (eyes_closed.py) or slumped posture (slump.py)
   0x40 looked off the road  (head turned away, see eyes_off_road.py)
   0x20 hands off the steering wheel
   0x10 distracted by mobile phone (live_phone.PhoneMonitor: already confirmed, not passed through FlickerFilter)
@@ -15,9 +15,12 @@ ASLEEP, OFF_ROAD, HANDS_OFF, PHONE = 0x80, 0x40, 0x20, 0x10
 RESERVED = 0x0F
 
 
-def format_record(timestamp, flags):
-    """The line CVEngine streams for one analyzed frame: 'timestamp,flags' (seconds, integer 0..255)."""
-    return f'{timestamp:.3f},{int(flags) & 0xFF}'
+def format_record(timestamp, flags, occupants=None):
+    """The line CVEngine streams for one analyzed frame: 'timestamp,flags,occupants' (seconds, integer 0..255, integer
+    count of people in the car). Without `occupants` the older two-field line 'timestamp,flags' is produced."""
+    if occupants is None:
+        return f'{timestamp:.3f},{int(flags) & 0xFF}'
+    return f'{timestamp:.3f},{int(flags) & 0xFF},{max(int(occupants), 0)}'
 
 
 def pack_flags(asleep=False, off_road=False, hands_off=False, phone=False):

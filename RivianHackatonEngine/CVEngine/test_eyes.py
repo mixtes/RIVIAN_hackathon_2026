@@ -358,6 +358,8 @@ class FlagByteTests(unittest.TestCase):
     def test_stream_record_format(self):
         self.assertEqual(cv_flags.format_record(12.3456, 0x60), '12.346,96')
         self.assertEqual(cv_flags.format_record(0, 0x1FF), '0.000,255')       # always a byte
+        self.assertEqual(cv_flags.format_record(12.3456, 0x60, 3), '12.346,96,3')   # with the occupant count
+        self.assertEqual(cv_flags.format_record(1.0, 0, -2), '1.000,0,0')           # never negative
 
     def test_pack(self):
         self.assertEqual(cv_flags.pack_flags(), 0x00)

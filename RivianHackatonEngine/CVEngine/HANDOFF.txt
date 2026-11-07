@@ -1,0 +1,183 @@
+HANDOFF: CVEngine driver monitoring (Rivian hackathon 2026)
+Written for: a new Claude chat that continues this CVEngine work with no memory of the previous one.
+Status as of 2026-11-07.
+
+======================================================================
+1. GOAL AND HARD REQUIREMENTS
+======================================================================
+Build a LIVE, causal (no lookahead, frame-by-frame) in-cabin driver-monitoring pipeline in
+RivianHackatonEngine/CVEngine/. It runs on a Mac (Python 3.9, MPS GPU). For every analyzed frame it outputs
+(timestamp, one byte) for the AlertEngine and GameEngine.
+
+The user stressed that it must be live ("I HAVE TO BE LIVE"), that hands-off detection must be accurate, and that
+ANY head movement off the road should trigger the output. It must work in both dark and light cabins.
+Allowed head movement (a mirror check, a look into a turn) is NOT filtered in CV: the downstream engines own all
+duration thresholds.
+
+======================================================================
+2. OUTPUT INTERFACE (agreed, documented)
+======================================================================
+One record per analyzed frame: timestamp (seconds, video time) and flags (one byte).
+
+  Value        Meaning                                            Status
+  0x80 (128)   fell asleep                                        NOT implemented
+  0x40 (64)    looked off the road (head turned, down or up)      implemented, being validated
+  0x20 (32)    hands off the steering wheel                       implemented
+  0x10 (16)    phone distraction                                  NOT wired live
+  0x0F (1-15)  reserved                                           always 0
+
+The record is now THREE fields: timestamp,flags,occupants (occupants = people in the car, front and rear, from occupancy.py;
+informational only, a lower bound). Stream example: 12.346,96,3. See the interface docs, section 3.1.
+
+Bits add up: 96 = 0x40 + 0x20. A higher bit means a higher priority. Each bit is a STATE, not an event.
+A 0 never proves absence: when nothing can be observed, the bit is 0.
+
+Docs: AlertEngine/CV_ENGINE_INTERFACE.md and GameEngine/CV_ENGINE_INTERFACE.md (both untracked, uncommitted).
+They cover the byte layout, the record format, the on_frame rules (validate, mask &0xF0, edge-detect each bit,
+order 1->0 before 0->1), per-engine implications and acceptance tests.
+
+NOT implemented: SafetySystem.on_frame in main.py (outside the CV folder). It is listed in requested_changes.md.
+Bit-to-action mapping: 0x80 EYES_CLOSED, 0x40 EYES_OFF_ROAD, 0x20 HANDS_OFF_WHEEL, 0x10 PHONE_USE.
+
+======================================================================
+3. HOW TO RUN
+======================================================================
+From RivianHackatonEngine/CVEngine, with the same python3 and venv as before (the OLD venv, which has MediaPipe):
+
+  python3 live.py videos/<name>.mp4 --stride 4 --stream      # prints "timestamp,byte" lines to stdout
+
+Options:
+  --save out.mp4      annotated video
+  --frames x.csv      detail CSV
+  --flags x.csv       byte CSV (frame,time_s,flags,hands_off,eyes_off_road)
+  --output x.csv      simple 0/1 hands-off CSV (1 = no hands on wheel)
+  --realtime          pace a video file at its own fps
+  --head face|pose    default face
+  --method hybrid|pose|mediapipe    default hybrid
+  --stream            records to stdout, every other message to stderr
+Camera: a camera number instead of a file, e.g. "0" (UNTESTED).
+
+Speed: about 7-8 fps analyzed, 130-140 ms per frame, the same at stride 2 and stride 4. At 30 fps source, stride 4
+is borderline (133 ms between frames vs 137 ms mean processing, p95 160 ms). Stride 5 is safer.
+
+======================================================================
+4. ARCHITECTURE (files in CVEngine/)
+======================================================================
+live.py            the live loop: pose -> hands -> face -> head -> flicker filters -> packed byte; writes the
+                   stream and CSVs and draws the overlay.
+auto_wheel.py      wheel detection: YOLOE (yoloe-11m-seg.pt, text prompts) on the bottom-right ROI crop, geometry
+                   gating, ellipse fit, prior ellipse fallback, 8-frame WheelCalibrator. ~3 s wall time.
+rules.py, hands_pose.py, hands_mediapipe.py, hands_hybrid.py
+                   hands-on-wheel logic. Hybrid = MediaPipe hands where found, pose "near" kept, pose "away"
+                   with no MediaPipe hand -> unknown. Hand states near/away/unknown; frame label near/off/unknown.
+                   Wrist tolerance margin = 15% of the shorter wheel dimension.
+HandsOffMachine    (in live.py) confirmed/ended events, hold 1.0 s, clear 0.5 s, loss 2 s.
+cv_flags.py        bit constants, pack_flags, format_record, FlickerFilter (symmetric 0.3 s; unknown >0.5 s -> 0).
+eyes_off_road.py   head-pose detector (see section 5).
+head_face.py       MediaPipe FaceLandmarker on a crop around the head: yaw/pitch in degrees, blink score,
+                   gaze score. ~9 ms per call.
+Tests              test_wheel.py, test_hands.py, test_eyes.py: 76 tests, all passing at the last run.
+                   Run: python -m unittest test_eyes test_hands test_wheel   (pytest is not installed)
+Models             yolo11m-pose.pt, yoloe-11m-seg.pt, mobileclip_blt.ts, hand_landmarker.task,
+                   face_landmarker.task (.task files auto-download and are git-ignored via *.task).
+Outputs            out_live/ (git-ignored). Newest: eyes5_* (022115, 011221, 020303), eyes6_* (010122, 010945),
+                   out_* / stream_* (012006), out2_* / stream2_* (011124).
+
+======================================================================
+5. HEAD / EYES-OFF-ROAD DESIGN (current)
+======================================================================
+Source: face-model angles when a face is found (81-100% of frames), otherwise pose-keypoint proxies
+(yaw = (nose_x - eye_mid_x) / eye_distance).
+Signs: yaw negative = turned toward the image LEFT; pitch positive = head down. "left"/"right" are image sides.
+
+Rule:
+  turned  when |yaw - baseline| >= 20 deg   (hysteresis: leaves below 14)
+  down    when pitch - baseline >= 12 deg   (exit 8)
+  up      when baseline - pitch >= 15 deg   (exit 10)
+  Pitch is only evaluated when the head is not turned.
+  No face and no usable keypoints -> state "unknown", bit 0.
+
+Why a baseline: the camera sees the driver from the side, so "looking at the road" is not 0 deg. Over 50 clips the
+forward yaw ranged -35 to +51 deg, mostly near +8 or near +33.
+
+Calibration, in three parts:
+  1. POSITION PRIOR: the forward angle is predicted from the head position in the frame (nose x, nose y, eye
+     distance); linear fit on 42 of 50 clips (FWD_YAW_COEF, FWD_PITCH_COEF). Leave-one-clip-out error: 7.7 deg yaw
+     (p90 15.8), 5.4 deg pitch (p90 10.4).
+  2. WARM-UP: the first 4 s (and at least 15 observations) only collect data. State "unknown / calibrating",
+     bit stays 0.
+  3. LEARNING: baseline = most frequent pose over the last ~2 minutes (weighted histogram mode). Each sample is
+     weighted by a Gaussian around the prior (sigma 20 deg yaw, 10 deg pitch). The prior counts as 4 s of
+     observations (PRIOR_SECONDS). The baseline keeps following the driver.
+
+Measured calibration quality (baseline error vs each clip's full-video mode, 42 clips with a clear forward pose):
+  yaw 7.0 deg at 8 s, 5.1 at 15 s, 2.9 at 29 s. The earlier fixed-prior median gave 10.4, 8.5 and 5.7.
+  This is an in-sample proxy, not hand-labelled truth.
+
+Evidence kept for sleep detection: blink (eye closure) and gaze-down scores are recorded per frame in the detail CSV
+and are not used by the off-road rule.
+
+======================================================================
+6. RESULTS SO FAR (all unverified by hand labels)
+======================================================================
+  Video   eyes_off_road = 1   Note
+  022115  35%    baseline too low until ~15 s; the 7.8-12.9 s stretch is partly a real turn, partly calibration
+  011221  15%    one stretch, 8.0-12.5 s
+  020303  21%
+  010122  38%    busy driver
+  010945  40%    busy driver
+  012006  27% of records   hands label near in 213 of 217 frames; two 1-frame "off" blips removed by the
+                           filter, so the hands bit stayed 0
+  011124  26% of records   hands near in all 217 frames
+Frames were not visually checked for most clips. 38-40% on busy drivers could be real movement or a baseline that
+does not settle.
+
+======================================================================
+7. KNOWN PROBLEMS / NEXT IMPROVEMENTS
+======================================================================
+ 1. HEAD-DOWN DETECTION IS WEAK. In 011124 at 8.07 s (the user's screenshot) the look-down was not flagged: pitch
+    was only +2-4 deg above the baseline, and the head was flagged "turned left" at 7.6-8.1 s instead. The pose
+    proxy pitch is weaker still. Next: look at that frame, check the pitch baseline, consider gaze-down or a
+    nose-to-chin cue. The pitch clamp pinned at 6 deg in 020303.
+ 2. START-OF-DRIVE WEAKNESS. A driver not looking at the road for most of the first ~15 s gets a wrong baseline
+    (seen in 022115: position prior said 16 deg, true forward ~33 deg). Ideas: a better prior; a speed signal from
+    the other engines (calibrate only while the car is moving); a longer or smarter calibration.
+ 3. NO GROUND-TRUTH LABELS. Priors, thresholds and calibration quality are in-sample (about 50 clips, one cabin
+    camera). Needs hand-labelled clips. "Up" has hardly any validation. For another car or camera the coefficients
+    must be refit.
+ 4. CHECK THE FLAGGED STRETCHES VISUALLY for the busy videos (010122, 010945, 022115, 011221) and whether the
+    false-alarm rate is acceptable.
+ 5. POSE FALLBACK: its baseline uses different units and its own constants; rarely used (1-11% of frames) but the
+    least calibrated.
+ 6. A head turned so far that nose and eyes vanish reads as "unknown" (bit 0): known limitation.
+ 7. SLEEP DETECTION (0x80) NOT BUILT. The user wants eye-closed duration, then classification as sleep vs loss of
+    consciousness. The blink score is already recorded. Needs duration logic and thresholds.
+ 8. PHONE BIT (0x10) not wired into the live output.
+ 9. SPEED: ~7 fps. For safety on a 30 fps camera use stride 5, or speed up by threading pose and MediaPipe or by
+    MediaPipe tracking mode. A camera feed that drops stale frames is untested.
+10. HANDS-OFF ACCURACY was only visually checked on a few videos; false-alert rates on all 50 are unknown.
+11. INTEGRATION: main.py needs SafetySystem.on_frame (requested_changes.md). Open points in the interface docs:
+    gap handling (2 s proposal), smoothing, phone granularity, availability.
+12. HOUSEKEEPING: update requirements.txt (mediapipe==0.10.21, protobuf==4.25.9, attrs==26.1.0). Partial
+    out_live/eyes2_..010603 files could be deleted (asked, no answer).
+
+======================================================================
+8. REPO AND PROCESS NOTES
+======================================================================
+Git: nothing has been committed or pushed. Modified: live.py. Untracked: cv_flags.py, eyes_off_road.py,
+head_face.py, test_eyes.py, HANDOFF.txt and the two CV_ENGINE_INTERFACE.md files. The user decides about commits.
+The repo's RULES.md says agents commit/push to main, don't change files outside their task folders, and list needed
+outside changes in requested_changes.md.
+
+Environment quirks:
+ - The project's CVEngine/venv/bin/pip and activate point to an OLD venv at
+   /Users/vuk/Desktop/rivian hackathon/venv. That is the venv the user's python3 actually uses, and MediaPipe is
+   installed there.
+ - "python -m pip" hangs in the project venv.
+ - iCloud evicts files on ~/Desktop ("dataless"), which caused stalls, timeouts and "partial file" video errors.
+   Fix: Finder "Keep Downloaded", or move the project out of Desktop.
+ - A clean scratch venv existed only in the previous session's temporary folder; rebuild it if needed.
+ - zsh does not word-split unquoted variables, and the path contains a space ("rivian git").
+
+User preferences: concise results; impatient with long or stalled runs; wants results one at a time; does not
+want runs over ~5 minutes; said "stop executing" when a run dragged.
