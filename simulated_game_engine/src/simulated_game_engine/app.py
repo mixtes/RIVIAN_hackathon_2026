@@ -70,6 +70,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     cv.add_argument("--cv-no-hands", action="store_true",
                     help="skip hands-off-wheel detection and wheel calibration (faster start-up)")
     cv.add_argument("--cv-no-yawn", action="store_true", help="skip yawn detection (YAWN)")
+    cv.add_argument("--cv-pose-model", default=None,
+                    help="pose weights for live.py, e.g. yolo11s-pose.pt (faster, same results in our tests)")
+    cv.add_argument("--cv-phone-model", default=None, help="phone detector weights for live.py (default yolo11m.pt)")
     cv.add_argument("--cv-keep-drive", action="store_true",
                     help="don't end the drive when the video ends (end it in the app)")
     cv.add_argument("--cv-no-window", action="store_true", help="don't show the video window")
@@ -114,6 +117,10 @@ async def run(args: argparse.Namespace) -> int:
             extra.append("--no-hands")
         if args.cv_no_yawn:
             extra.append("--no-yawn")
+        if args.cv_pose_model:
+            extra += ["--pose-model", args.cv_pose_model]
+        if args.cv_phone_model:
+            extra += ["--phone-model", args.cv_phone_model]
         cv_source = CvSource(
             core, server.dispatch, source=args.cv, cv_dir=engine.path / "CVEngine",
             python=args.cv_python or default_cv_python(engine.path), extra_args=extra,
