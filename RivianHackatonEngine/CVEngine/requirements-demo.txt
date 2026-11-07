@@ -1,0 +1,10 @@
+# Packages needed to run the live demo (live.py). Tested on Windows, Python 3.13, CPU only.
+#   python -m pip install -r requirements-demo.txt
+#   python -m pip install --no-deps -r requirements-hands.txt      (MediaPipe face/hand models, see that file)
+# torch / torchvision come with ultralytics (CPU build).
+ultralytics==8.4.193
+opencv-python==4.11.0.86
+numpy==2.5.4
+scipy==1.18.1
+# optional: faster CPU inference via OpenVINO (export_openvino.py). Remove this line if it does not install.
+openvino==2026.4.1

@@ -29,7 +29,7 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
                 READY to stderr, then wait for one line on stdin before playing (used by the bridge: the video starts
                 when the car app starts a drive)
 """
-import argparse, json, sys, threading, time
+import argparse, json, os, sys, threading, time
 import cv2, numpy as np
 import auto_wheel, rules
 import hands_pose
@@ -55,6 +55,49 @@ def put_text(img, text, org, font, scale, color, thickness):
     if x == 30:
         y = int(round(y * TEXT_SCALE))
     cv2.putText(img, text, (x, y), font, scale * TEXT_SCALE, color, max(1, int(round(thickness * TEXT_SCALE))))
+
+
+def quiet_native_logs():
+    """Hide the log lines MediaPipe / TensorFlow Lite / Ultralytics / OpenVINO print while loading and running (the
+    native ones write straight to the stderr file descriptor). Python's own messages and errors still show."""
+    os.environ.setdefault('GLOG_minloglevel', '2')
+    os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+    os.environ['YOLO_VERBOSE'] = 'False'
+    try:
+        keep = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+        sys.stderr = os.fdopen(keep, 'w', buffering=1)
+    except OSError:
+        pass
+
+
+FLAG_NAMES = ((cv_flags.ASLEEP, 'ASLEEP (eyes closed / slumped)'), (cv_flags.OFF_ROAD, 'EYES_OFF_ROAD'),
+              (cv_flags.HANDS_OFF, 'HANDS_OFF_WHEEL'), (cv_flags.PHONE, 'PHONE_USE'), (cv_flags.YAWN, 'YAWN'))
+
+
+def print_summary(source, proc, lat, video_s, wall_s, dropped, spans):
+    """End-of-run summary: speed and when each flag was on (video time)."""
+    line = '-' * 64
+    print(line)
+    print(f' Video      {os.path.basename(str(source))}')
+    if not lat:
+        print(' No frames were analyzed.')
+        print(line)
+        return
+    mean = float(np.mean(lat))
+    skipped = f', {dropped} skipped to stay live' if dropped else ''
+    print(f' Analyzed   {proc} frames of {video_s:.1f} s video in {wall_s:.1f} s{skipped}')
+    print(f' Speed      {mean * 1000:.0f} ms per frame = {1 / mean:.1f} frames per second '
+          f'(95% under {np.percentile(lat, 95) * 1000:.0f} ms)')
+    detected = [(name, s) for bit, name in FLAG_NAMES for s in [spans.get(bit)] if s]
+    if not detected:
+        print(' Detected   nothing')
+    for i, (name, s) in enumerate(detected):
+        times = ', '.join(f'{a:.1f}-{b:.1f} s' for a, b in s)
+        print(f' {"Detected" if i == 0 else "":10s} {name:31s} {times}')
+    print(line)
 
 
 def pick_device():
@@ -313,8 +356,16 @@ def main():
     ap.add_argument('--play', action='store_true', help='plain video window at real speed, no overlays')
     ap.add_argument('--wait', action='store_true',
                     help='load models and calibrate, print READY to stderr, wait for a stdin line before playing')
+    ap.add_argument('--verbose', action='store_true',
+                    help='print the detailed log (models, device, events, library messages); on by default with '
+                         '--stream / --wait (the bridge)')
     args = ap.parse_args()
     TEXT_SCALE = args.text_scale
+    verbose = args.verbose or args.stream or args.wait
+    info = print if verbose else (lambda *a, **k: None)
+    if not verbose:
+        quiet_native_logs()
+        print('Loading models (about 10 s) ...', flush=True)
     stream_out = sys.stdout
     if args.stream:
         sys.stdout = sys.stderr          # diagnostics must not mix into the record stream
@@ -323,7 +374,7 @@ def main():
     device = pick_device()
     auto_wheel.DEVICE = device
     pose = YOLO(args.pose_model)
-    print(f'device={device}; loading models and warming up...', flush=True)
+    info(f'device={device}; loading models and warming up...', flush=True)
     pose.predict(np.zeros((640, 640, 3), np.uint8), imgsz=args.pose_size, verbose=False, device=device)
     cal = None
     if not args.no_hands:
@@ -331,7 +382,7 @@ def main():
         cal.model = auto_wheel.load_model()
         cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
     else:
-        print('hands-off-wheel detection off (--no-hands): no wheel calibration, bit 0x20 stays 0', flush=True)
+        info('hands-off-wheel detection off (--no-hands): no wheel calibration, bit 0x20 stays 0', flush=True)
 
     faces = None
     if args.head == 'face':
@@ -343,9 +394,9 @@ def main():
         phone = PhoneMonitor(phone_model=args.phone_model or DET_MODEL,
                              dark_phone_model=args.dark_phone_model or PhoneMonitor.DEFAULT_DARK_MODEL,
                              device=device, det_size=args.phone_size or DET_SIZE)
-        print(f'phone detection on ({args.phone_model or DET_MODEL} @ {args.phone_size or DET_SIZE}px; '
+        info(f'phone detection on ({args.phone_model or DET_MODEL} @ {args.phone_size or DET_SIZE}px; '
               f'dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
-    print(f'pose model {args.pose_model} @ {args.pose_size}px', flush=True)
+    info(f'pose model {args.pose_model} @ {args.pose_size}px', flush=True)
     yawner = hand_finder = None
     if not args.no_yawn and faces is not None:
         yawner = yawn.YawnDetector()
@@ -358,7 +409,7 @@ def main():
             except ImportError:
                 hand_finder = None                           # without hands only uncovered yawns are found
     elif not args.no_yawn:
-        print('yawn detection off: it needs --head face', flush=True)
+        info('yawn detection off: it needs --head face', flush=True)
     cap, is_cam = open_source(args.source)
     if args.wait:
         if cal is not None:
@@ -367,7 +418,7 @@ def main():
             if cal.status == 'failed':
                 sys.exit(f'Wheel calibration failed: {cal.error}')
             if cal.status == 'locked':
-                print(f'wheel LOCKED before the drive: source={cal.info["source"]} method={args.method} '
+                info(f'wheel LOCKED before the drive: source={cal.info["source"]} method={args.method} '
                       f'(calibration took {time.monotonic() - cal_started:.1f}s)', flush=True)
         print('READY', file=sys.stderr, flush=True)
         if not sys.stdin.readline():         # EOF: whoever started us went away
@@ -405,6 +456,11 @@ def main():
     last_idx = -args.stride
     lat = []
     t = 0.0
+    spans, open_since = {}, {}                       # flag bit -> [(start, end)] in video time, for the summary
+    if not verbose:
+        how = 'press q in the video window' if (args.show or args.play) else 'Ctrl+C'
+        print(f'Running {os.path.basename(str(args.source))} ({how} to stop) ...', flush=True)
+    run_started = time.monotonic()
     reader, last_index = None, None
     if not player and (args.realtime or is_cam):
         # Live without --play: a reader thread keeps only the newest frame, so a slow frame never builds a
@@ -441,7 +497,7 @@ def main():
                 if cal.status == 'locked':
                     wheel, margin = cal.polygon, cal.margin
                     hands = make_hands(args.method, wheel, margin)
-                    print(f'[t={t:6.2f}s] wheel LOCKED source={cal.info["source"]} method={args.method} '
+                    info(f'[t={t:6.2f}s] wheel LOCKED source={cal.info["source"]} method={args.method} '
                           f'(calibration took {time.monotonic() - started:.1f}s of wall time)', flush=True)
                 continue
             if cal is not None and cal.status == 'failed':
@@ -485,6 +541,11 @@ def main():
             yawn_bit = yawn.YawnDetector.raw_bit(yawn_state) if yawn_state else 0
             flags = cv_flags.pack_flags(asleep=asleep, hands_off=bool(hands_bit), off_road=bool(head_bit),
                                         phone=bool(phone_bit), yawn=bool(yawn_bit))
+            for bit, _ in FLAG_NAMES:
+                if flags & bit and bit not in open_since:
+                    open_since[bit] = t
+                elif not flags & bit and bit in open_since:
+                    spans.setdefault(bit, []).append((open_since.pop(bit), t))
             if args.stream:
                 try:
                     print(cv_flags.format_record(t, flags, occ.count), file=stream_out, flush=True)
@@ -492,7 +553,7 @@ def main():
                     break
             for ev in machine.update(t, label):
                 ev['wall_latency_ms'] = round((time.monotonic() - t0) * 1000)
-                print(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
+                info(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
                 if log:
                     log.write(json.dumps(ev) + '\n'); log.flush()
             if ocsv:
@@ -645,10 +706,10 @@ def main():
         if player:
             player.stop()
             player.join(timeout=2)
-            print(f'player: read {player.read} frames, drawn {player.drawn}, skipped {player.late} (late); '
+            info(f'player: read {player.read} frames, drawn {player.drawn}, skipped {player.late} (late); '
                   f'longest freeze {player.max_draw_gap:.2f}s', flush=True)
         for ev in machine.finish(t):
-            print(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
+            info(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
             if log:
                 log.write(json.dumps(ev) + '\n')
         if reader is None:
@@ -663,7 +724,12 @@ def main():
             ocsv.close()
         if bcsv:
             bcsv.close()
-    if lat:
+    for bit, start in open_since.items():
+        spans.setdefault(bit, []).append((start, t))
+    if not verbose:
+        print_summary(args.source, proc, lat, t, time.monotonic() - run_started,
+                      (reader.read_count - proc) if reader else 0, spans)
+    elif lat:
         mean = float(np.mean(lat))
         print(f'processed {proc} frames; mean {mean * 1000:.0f} ms/frame = {1 / mean:.1f} fps '
               f'(source {fps:.0f} fps, stride {args.stride}' + (f', {reader.read_count - proc} frames dropped to stay live' if reader else '') + f'); p95 {np.percentile(lat, 95) * 1000:.0f} ms')

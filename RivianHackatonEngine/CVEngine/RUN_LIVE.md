@@ -4,6 +4,7 @@
 for the AlertEngine / GameEngine. Everything here is run from `RivianHackatonEngine/CVEngine` with the CVEngine
 Python environment active (on this machine: `venv\Scripts\Activate.ps1`).
 
+Installing and running only the live demo (for someone new, e.g. the judges): [DEMO_GUIDE.md](DEMO_GUIDE.md).
 For the full demo with the car app (backend + bridge + emulator) see the main [README](../../README.md),
 section "Live CV test with the app (Windows)", and `run_commands.txt`.
 
@@ -78,6 +79,7 @@ Measured on an 8-core Intel CPU without GPU (details in [BENCHMARKS.md](BENCHMAR
 |---|---|
 | `--show` | window with the detections (skeleton, phone boxes, head, eyes, yawn, flags) |
 | `--text-scale X` | size of the overlay text (default 0.6; 1.0 = the original large text) |
+| (terminal) | a short summary at the end: frames analyzed, speed, and when each flag was on. `--verbose` prints the detailed log instead (always on with `--stream` / `--wait`, i.e. through the bridge) |
 | `--save out.mp4` | the same overlay video saved to a file |
 | `--stream` | one line per analyzed frame on stdout: `timestamp,flags,occupants` (what the bridge reads) |
 | `--flags x.csv` | per frame: `frame,time_s,flags,hands_off,eyes_off_road,occupants,phone,yawn` |
