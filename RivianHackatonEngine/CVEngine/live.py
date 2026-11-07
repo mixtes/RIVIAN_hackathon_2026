@@ -270,7 +270,7 @@ def main():
     ap.add_argument('--frames', help='CSV with the per-frame hand data (state, wrist and hand points)')
     ap.add_argument('--realtime', action='store_true')
     ap.add_argument('--output', help='simple per-frame CSV: frame,time_s,hands_off,unknown (1 = no hands on the wheel)')
-    ap.add_argument('--flags', help='CSV of the interface byte: frame,time_s,flags,hands_off,eyes_off_road')
+    ap.add_argument('--flags', help='CSV of the interface byte: frame,time_s,flags,hands_off,eyes_off_road,occupants,phone,yawn')
     ap.add_argument('--stream', action='store_true',
                     help='print one record per analyzed frame to stdout: "timestamp,flags,occupants" (flags = the '
                          'interface byte 0..255, occupants = people in the car); every other message goes to stderr')
