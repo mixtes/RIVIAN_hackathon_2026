@@ -29,6 +29,7 @@ Status (all 116 clips, stride 8): 0 false-alarm clips; real use detected in 11 c
 | E | Merge a new event into the previous one if the gap is < ~5 s (one alert instead of a split) | 4 (allows shorter end gap) | small |
 | F | GameEngine: `PHONE_USE grace_seconds` 1.0 -> 0 (CV already waits ~1 s) | 3 (double delay) | trivial, GameEngine owner |
 | G | Smaller / faster models (`live.py --pose-model / --phone-model`). Tested on 084339, 092916, 014837: `yolo11s-pose.pt` + `yolo11m.pt` = 4.5 fps (vs 3.5) with the same phone result; a smaller **phone** model breaks detection (084339: phone boxes 19/36 m, 6/36 s, 2/36 n; PHONE_USE missed). Otherwise GPU / NPU | 8 | done (options); GPU open |
+| G2 | OpenVINO export (`export_openvino.py`): `--pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/` = **6.2 fps vs 3.5**, identical phone results on 084339, 092916, 014837. Phone model must be exported with dynamic shapes (fixed 640x640 found 14/36 vs 19/36) | 8 | done (opt-in) |
 | H | Hand landmark search centered on the phone box (not only the wrist) | 5 | small, measure first |
 | I | Per-vehicle calibration of crop and tray zone at startup | 7 | medium |
 

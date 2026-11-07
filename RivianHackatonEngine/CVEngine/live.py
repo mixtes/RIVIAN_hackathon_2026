@@ -19,7 +19,8 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
   --no-hands    skip hands-off-wheel detection and wheel calibration (bit 0x20 stays 0; faster)
   --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
   --pose-model / --pose-size, --phone-model / --phone-size   try other (e.g. smaller, faster) YOLO models;
-                the defaults are yolo11m-pose.pt and yolo11m.pt at 640 px
+                the defaults are yolo11m-pose.pt and yolo11m.pt at 640 px; OpenVINO exports (export_openvino.py) are ~1.8x
+                faster on Intel CPUs: --pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/
   --no-yawn     skip yawn detection (bit 0x08: mouth opened wide, then covered by a hand; yawn.py; needs --head face)
   --play        show the plain video (every frame, no overlays) in a window at its real speed; q closes it and stops.
                 A player thread reads and shows the source; the analysis takes the newest frame (at least --stride

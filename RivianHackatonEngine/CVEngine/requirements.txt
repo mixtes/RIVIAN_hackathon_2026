@@ -36,3 +36,4 @@ ultralytics==8.4.203
 ultralytics-thop==2.2.5
 urllib3==2.6.3
 zipp==3.23.1
+openvino==2026.4.1    # optional: faster CPU inference via export_openvino.py
