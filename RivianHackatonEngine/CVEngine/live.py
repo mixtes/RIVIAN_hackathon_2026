@@ -15,6 +15,7 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
   --flags FILE  the byte sent to the AlertEngine/GameEngine per analyzed frame (cv_flags.py): 0x20 hands off the
                 wheel, 0x40 head turned away or down/up (eyes_off_road.py), lightly smoothed; 0x10 phone use (live_phone.PhoneMonitor,
                 confirmed: ~1 s to switch on, ~3 s to switch off). CSV: frame,time_s,flags,hands_off,eyes_off_road,phone
+  --no-hands    skip hands-off-wheel detection and wheel calibration (bit 0x20 stays 0; faster)
   --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
 """
 import argparse, json, sys, time
@@ -70,6 +71,14 @@ def make_hands(method, wheel, margin):
         return hands_mediapipe.MediaPipeHands(wheel, margin)
     import hands_hybrid
     return hands_hybrid.HybridHands(wheel, margin)
+
+
+class NoHands:
+    """--no-hands: stands in for a hand method without running anything. Every hand is 'unknown', so the
+    hands-off bit (0x20) stays 0 and HandsOffMachine never confirms; no wheel calibration is needed."""
+
+    def update(self, frame, kp):
+        return ['unknown', 'unknown'], dict(points=[None, None], landmarks=[None, None], sources=['off', 'off'])
 
 
 def classify(states):
@@ -170,6 +179,9 @@ def main():
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     ap.add_argument('--no-phone', action='store_true', help='do not run phone detection (bit 0x10 stays 0)')
+    ap.add_argument('--no-hands', action='store_true',
+                    help='do not run hands-off-wheel detection or wheel calibration (bit 0x20 stays 0); faster, and '
+                         'other detections start on the first frame')
     ap.add_argument('--dark-phone-model', default=None,
                     help='fine-tuned phone model for dark frames (default: phone_dataset/runs/phone_ft/weights/'
                          'best.pt if present)')
@@ -182,11 +194,15 @@ def main():
     device = pick_device()
     auto_wheel.DEVICE = device
     pose = YOLO(POSE_MODEL)
-    cal = auto_wheel.WheelCalibrator(prior_fallback=True)
     print(f'device={device}; loading models and warming up...', flush=True)
     pose.predict(np.zeros((640, 640, 3), np.uint8), imgsz=POSE_SIZE, verbose=False, device=device)
-    cal.model = auto_wheel.load_model()
-    cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
+    cal = None
+    if not args.no_hands:
+        cal = auto_wheel.WheelCalibrator(prior_fallback=True)
+        cal.model = auto_wheel.load_model()
+        cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
+    else:
+        print('hands-off-wheel detection off (--no-hands): no wheel calibration, bit 0x20 stays 0', flush=True)
 
     faces = None
     if args.head == 'face':
@@ -217,7 +233,8 @@ def main():
                    'baseline_source,head_source,blink,gaze_down\n')
     machine, started = HandsOffMachine(), time.monotonic()
     frame_no = proc = 0
-    wheel = margin = hands = None
+    wheel = margin = None
+    hands = NoHands() if args.no_hands else None
     lat = []
     t = 0.0
     try:
@@ -234,7 +251,7 @@ def main():
             if (frame_no - 1) % args.stride:
                 continue
             t0 = time.monotonic()
-            if cal.status == 'collecting':
+            if cal is not None and cal.status == 'collecting':
                 if cal.add_frame(frame) == 'collecting':
                     continue
                 if cal.status == 'locked':
@@ -243,7 +260,7 @@ def main():
                     print(f'[t={t:6.2f}s] wheel LOCKED source={cal.info["source"]} method={args.method} '
                           f'(calibration took {time.monotonic() - started:.1f}s of wall time)', flush=True)
                 continue
-            if cal.status == 'failed':
+            if cal is not None and cal.status == 'failed':
                 sys.exit(f'Wheel calibration failed: {cal.error}')
             result = pose.predict(frame, imgsz=POSE_SIZE, conf=0.25, verbose=False, device=device)[0]
             kp = driver_keypoints(result, frame.shape[1]) if result.keypoints is not None else None
@@ -292,9 +309,10 @@ def main():
             lat.append(time.monotonic() - t0)
             if args.show or args.save:
                 view = frame.copy()
-                cv2.polylines(view, [wheel], True, (255, 255, 0), 4)
-                for o in auto_wheel.tolerance_outline(wheel, margin, (view.shape[1], view.shape[0])):
-                    cv2.polylines(view, [o], True, (255, 100, 0), 3)
+                if wheel is not None:
+                    cv2.polylines(view, [wheel], True, (255, 255, 0), 4)
+                    for o in auto_wheel.tolerance_outline(wheel, margin, (view.shape[1], view.shape[0])):
+                        cv2.polylines(view, [o], True, (255, 100, 0), 3)
                 if kp is not None:
                     for a, b in rules_sk:
                         if kp[a, 2] >= rules.KP_CONF and kp[b, 2] >= rules.KP_CONF:
