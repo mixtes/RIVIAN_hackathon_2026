@@ -77,6 +77,7 @@ Measured on an 8-core Intel CPU without GPU (details in [BENCHMARKS.md](BENCHMAR
 | Option | Output |
 |---|---|
 | `--show` | window with the detections (skeleton, phone boxes, head, eyes, yawn, flags) |
+| `--text-scale X` | size of the overlay text (default 0.6; 1.0 = the original large text) |
 | `--save out.mp4` | the same overlay video saved to a file |
 | `--stream` | one line per analyzed frame on stdout: `timestamp,flags,occupants` (what the bridge reads) |
 | `--flags x.csv` | per frame: `frame,time_s,flags,hands_off,eyes_off_road,occupants,phone,yawn` |

@@ -46,6 +46,17 @@ POSE_MODEL, POSE_SIZE, DRIVER_ON_RIGHT = 'yolo11m-pose.pt', 640, True
 PLAY_WINDOW, PLAY_MAX_WIDTH = 'DriveScore - driver camera', 1280    # --play
 
 
+TEXT_SCALE = 0.6           # overlay text size (--text-scale); 1.0 = the original large text
+
+
+def put_text(img, text, org, font, scale, color, thickness):
+    """cv2.putText scaled by TEXT_SCALE. Status lines at the left edge (x == 30) also move closer together."""
+    x, y = org
+    if x == 30:
+        y = int(round(y * TEXT_SCALE))
+    cv2.putText(img, text, (x, y), font, scale * TEXT_SCALE, color, max(1, int(round(thickness * TEXT_SCALE))))
+
+
 def pick_device():
     try:
         import torch
@@ -261,6 +272,7 @@ def open_source(source):
 
 
 def main():
+    global TEXT_SCALE
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('source')
     ap.add_argument('--stride', type=int, default=1)
@@ -284,6 +296,8 @@ def main():
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     ap.add_argument('--no-phone', action='store_true', help='do not run phone detection (bit 0x10 stays 0)')
     ap.add_argument('--no-yawn', action='store_true', help='do not run yawn detection (bit 0x08 stays 0)')
+    ap.add_argument('--text-scale', type=float, default=TEXT_SCALE,
+                    help=f'size of the overlay text with --show / --save (default {TEXT_SCALE}; 1.0 = large)')
     ap.add_argument('--no-hands', action='store_true',
                     help='do not run hands-off-wheel detection or wheel calibration (bit 0x20 stays 0); faster, and '
                          'other detections start on the first frame')
@@ -300,6 +314,7 @@ def main():
     ap.add_argument('--wait', action='store_true',
                     help='load models and calibrate, print READY to stderr, wait for a stdin line before playing')
     args = ap.parse_args()
+    TEXT_SCALE = args.text_scale
     stream_out = sys.stdout
     if args.stream:
         sys.stdout = sys.stderr          # diagnostics must not mix into the record stream
@@ -527,12 +542,12 @@ def main():
                         for q, on in zip(pts, inside):
                             cv2.circle(view, (int(q[0]), int(q[1])), 6, (0, 220, 0) if on else (0, 0, 255), -1)
                 color = {'near': (0, 200, 0), 'off': (0, 0, 255), 'unknown': (160, 160, 160)}[label]
-                cv2.putText(view, f't={t:.2f}s  HANDS OFF-DETECTION DISABLED' if args.no_hands else
+                put_text(view, f't={t:.2f}s  HANDS OFF-DETECTION DISABLED' if args.no_hands else
                             f'{label.upper()}  L:{states[0]}({dbg["sources"][0]}) '
                             f'R:{states[1]}({dbg["sources"][1]})  t={t:.2f}s',
                             (30, 80), 0, 2.0, color, 5)
                 if machine.confirmed:
-                    cv2.putText(view, CASE, (30, 160), 0, 2.2, (0, 0, 255), 6)
+                    put_text(view, CASE, (30, 160), 0, 2.2, (0, 0, 255), 6)
                 head_color = {'turned': (0, 0, 255), 'down': (0, 0, 255), 'up': (0, 0, 255),
                               'away': (0, 0, 255), 'forward': (0, 200, 0), 'unknown': (160, 160, 160)}[obs.state]
                 unit = ' deg' if obs.source == 'face' else ''
@@ -553,17 +568,17 @@ def main():
                 head_text += f' [{obs.source or "-"}/{obs.baseline_source}]'
                 if obs.blink is not None:
                     head_text += f'  blink {obs.blink:.2f}'
-                cv2.putText(view, head_text, (30, 240), 0, 1.3, head_color, 4)
-                cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit} '
+                put_text(view, head_text, (30, 240), 0, 1.3, head_color, 4)
+                put_text(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit} '
                                   f'asleep={int(bool(flags & cv_flags.ASLEEP))} phone={phone_bit} yawn={yawn_bit}',
                             (30, 320), 0, 1.5, (0, 0, 255) if flags else (200, 200, 200), 4)
                 zone_color = {'driver': (255, 200, 0), 'front': (0, 200, 255), 'rear': (255, 0, 255)}
                 for person in occ.people:
                     b = [int(v) for v in person.box]
                     cv2.rectangle(view, (b[0], b[1]), (b[2], b[3]), zone_color[person.zone], 4)
-                    cv2.putText(view, f'{person.zone} {person.conf:.2f}', (b[0] + 8, b[1] + 40), 0, 1.3,
+                    put_text(view, f'{person.zone} {person.conf:.2f}', (b[0] + 8, b[1] + 40), 0, 1.3,
                                 zone_color[person.zone], 3)
-                cv2.putText(view, f'PEOPLE {occ.count}  (driver {occ.zones["driver"]}, front {occ.zones["front"]}, '
+                put_text(view, f'PEOPLE {occ.count}  (driver {occ.zones["driver"]}, front {occ.zones["front"]}, '
                                   f'rear {occ.zones["rear"]}; this frame {occ.raw})', (30, 500), 0, 1.4, (255, 255, 255), 4)
                 eye_color = {'closed': (0, 0, 255), 'open': (0, 200, 0), 'unknown': (160, 160, 160)}[eye.state]
                 eye_text = f'EYES {eye.state.upper()}'
@@ -575,31 +590,33 @@ def main():
                     eye_text += f'  score {eye.score:.2f} ref {eye.ref:.2f}'
                 if eye.drowsy:
                     eye_text += f'  DROWSY (PERCLOS {eye.perclos:.0%}, {eye.microsleeps} long closures)'
-                cv2.putText(view, eye_text, (30, 400), 0, 1.5, eye_color, 4)
+                put_text(view, eye_text, (30, 400), 0, 1.5, eye_color, 4)
                 body_color = {'slumped': (0, 0, 255), 'upright': (0, 200, 0), 'unknown': (160, 160, 160)}[body.state]
                 body_text = f'POSTURE {body.state.upper()}'
                 if body.state == 'slumped':
                     body_text += f' {body.slumped_s:.1f}s' + (' (driver lost)' if body.held else '')
                 if body.ratio is not None:
                     body_text += f'  head/shoulder {body.ratio:+.2f} (upright {body.baseline:.2f})'
-                cv2.putText(view, body_text, (30, 580), 0, 1.4, body_color, 4)
+                put_text(view, body_text, (30, 580), 0, 1.4, body_color, 4)
                 if eye.score is not None:                       # bar: score vs the closing level
-                    cv2.rectangle(view, (30, 430), (430, 460), (80, 80, 80), 2)
-                    cv2.rectangle(view, (30, 430), (30 + int(400 * min(eye.score, 1.0)), 460), eye_color, -1)
-                    mark = 30 + int(400 * eyes_closed.ENTER)
-                    cv2.line(view, (mark, 425), (mark, 465), (255, 255, 255), 3)
+                    s = TEXT_SCALE
+                    y0, y1, w = int(430 * s), int(460 * s), int(400 * s)
+                    cv2.rectangle(view, (30, y0), (30 + w, y1), (80, 80, 80), 2)
+                    cv2.rectangle(view, (30, y0), (30 + int(w * min(eye.score, 1.0)), y1), eye_color, -1)
+                    mark = 30 + int(w * eyes_closed.ENTER)
+                    cv2.line(view, (mark, y0 - 5), (mark, y1 + 5), (255, 255, 255), 3)
                 if phone is not None and phone.last is not None:
                     ev, boxes, _ = phone.last
                     for p in boxes:
                         used = ev.state == 'POSITIVE' and ev.phone is not None and tuple(p[:4]) == tuple(ev.phone[:4])
                         col = (0, 0, 255) if used else (255, 0, 255)
                         cv2.rectangle(view, (int(p[0]), int(p[1])), (int(p[2]), int(p[3])), col, 4)
-                        cv2.putText(view, f'phone {p[4]:.2f}', (int(p[0]), int(p[1]) - 10), 0, 1.2, col, 3)
-                    cv2.putText(view, f'PHONE {"USE" if phone_bit else "-"}  evidence {ev.state} ({ev.reason})',
+                        put_text(view, f'phone {p[4]:.2f}', (int(p[0]), int(p[1]) - 10), 0, 1.2, col, 3)
+                    put_text(view, f'PHONE {"USE" if phone_bit else "-"}  evidence {ev.state} ({ev.reason})',
                                 (30, 660), 0, 1.3, (0, 0, 255) if phone_bit else (200, 200, 200), 4)
                 if yawn_state is not None:
                     jaw = '-' if yawn_state.jaw_open is None else f'{yawn_state.jaw_open:.2f}'
-                    cv2.putText(view, f'YAWN {"YES" if yawn_bit else "-"}  jawOpen {jaw}'
+                    put_text(view, f'YAWN {"YES" if yawn_bit else "-"}  jawOpen {jaw}'
                                       f'{"  " + yawn_state.reason if yawn_state.reason else ""}',
                                 (30, 740), 0, 1.3, (0, 0, 255) if yawn_bit else (200, 200, 200), 4)
                 if kp is not None and obs.yaw is not None:
