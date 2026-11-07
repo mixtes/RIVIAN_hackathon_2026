@@ -29,16 +29,15 @@
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    a { color: var(--green); text-underline-offset: 3px; }
-    button, summary, a { -webkit-tap-highlight-color: transparent; }
+    button, a { -webkit-tap-highlight-color: transparent; }
     :focus-visible { outline: 3px solid var(--amber); outline-offset: 5px; }
-    .page { width: min(1200px, calc(100% - 64px)); margin: 0 auto; }
+    .page { width: min(1120px, calc(100% - 64px)); margin: 0 auto; }
     .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 20px;
-      padding: 28px 0;
+      padding: 22px 0;
       border-bottom: 1px solid var(--line);
     }
     .brand { display: flex; align-items: center; gap: 11px; font-size: 19px; font-weight: 750; letter-spacing: -.5px; }
@@ -48,11 +47,11 @@
     .offline::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--green); }
     .print-button { border: 1px solid #b8c2b5; border-radius: 100px; background: transparent; color: var(--ink); padding: 9px 16px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
     .print-button:hover { background: var(--green-soft); }
-    .hero { display: grid; grid-template-columns: 1fr 285px; align-items: center; gap: 48px; padding: 38px 0 30px; }
+    .hero { padding: 28px 0; }
     .eyebrow { margin: 0 0 13px; font-size: 10px; font-weight: 750; letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); }
-    h1 { margin: 0; font-size: clamp(32px, 3.8vw, 48px); line-height: 1.1; font-weight: 650; letter-spacing: -1.8px; }
+    h1 { margin: 0; font-size: clamp(30px, 3.8vw, 42px); line-height: 1.15; font-weight: 650; letter-spacing: -1.4px; }
     h1 span { color: var(--green); }
-    .lead { max-width: 650px; margin: 17px 0 0; color: var(--muted); font-size: 15px; }
+    .lead { margin: 12px 0 0; color: var(--muted); font-size: 15px; }
     .choice { padding: 23px; border-radius: var(--radius); background: var(--ink); color: var(--card); }
     .choice .eyebrow { color: #b7cfc0; margin-bottom: 17px; }
     .model-pair { display: flex; align-items: center; gap: 12px; }
@@ -60,28 +59,23 @@
     .model-pair small { display: block; margin-top: 6px; color: #d3ded5; font-size: 12px; }
     .model-pair .plus { color: #b7cfc0; font-size: 22px; }
     .choice p:last-child { margin: 17px 0 0; border-top: 1px solid #4d675d; padding-top: 13px; color: #d3ded5; font-size: 12px; }
-    .context { display: flex; flex-wrap: wrap; gap: 9px 21px; padding-bottom: 23px; color: var(--muted); font-size: 11px; }
-    .context strong { color: var(--ink); font-weight: 650; }
-    .comparison { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+    .comparison { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); gap: 20px; align-items: start; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
-    .chart-card { padding: 25px 24px 19px; }
-    .section-label { color: var(--green); font-size: 10px; font-weight: 750; letter-spacing: 1.5px; text-transform: uppercase; }
+    .chart-card { padding: 22px; }
     h2 { font-size: 21px; font-weight: 650; letter-spacing: -.5px; line-height: 1.25; margin: 7px 0 9px; }
     .section-intro { color: var(--muted); font-size: 12px; margin: 0; }
-    .chart-scroll { overflow-x: auto; margin: 20px -10px 0; padding: 0 10px 4px; }
-    table { border-collapse: collapse; width: 100%; font-size: 12px; }
-    caption { text-align: left; color: var(--muted); font-size: 11px; margin-bottom: 10px; }
-    thead th { text-align: left; color: var(--muted); font-size: 10px; font-weight: 600; padding: 0 8px 11px; border-bottom: 1px solid var(--line); }
+    .chart-scroll { overflow-x: auto; margin: 16px -10px 0; padding: 0 10px 4px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    thead th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 600; padding: 0 8px 11px; border-bottom: 1px solid var(--line); }
     thead th:first-child { padding-left: 0; }
-    tbody th { width: 30%; text-align: left; font-weight: 650; padding: 16px 8px 16px 0; line-height: 1.25; }
+    tbody th { width: 36%; text-align: left; font-weight: 650; padding: 12px 8px 12px 0; line-height: 1.25; }
     tbody th small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 400; }
     tbody td { padding: 12px 8px; border-bottom: 1px solid #eeeee5; }
     tbody th { border-bottom: 1px solid #eeeee5; }
     tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
-    .speed { width: 43%; min-width: 115px; }
+    .speed { width: 38%; min-width: 100px; }
     .speed-top { display: flex; justify-content: space-between; align-items: baseline; gap: 7px; margin-bottom: 6px; white-space: nowrap; }
     .speed-value { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
-    .speed-time { font-size: 10px; color: var(--muted); }
     .track { height: 7px; border-radius: 4px; background: #e9ece3; overflow: hidden; }
     .bar { width: var(--bar); height: 100%; border-radius: inherit; background: #80928b; }
     .miss .bar { background: #c39b60; }
@@ -90,21 +84,13 @@
     .runtime { background: #edf3e9; }
     .runtime th { padding-left: 9px; border-radius: 9px 0 0 9px; }
     .runtime td:last-child { border-radius: 0 9px 9px 0; }
-    .outcome { white-space: nowrap; font-size: 10px; font-weight: 650; }
+    .outcome { white-space: nowrap; font-size: 11px; font-weight: 650; }
     .status { display: inline-block; border-radius: 5px; padding: 4px 7px; color: var(--green); background: var(--green-soft); }
     .status.missed { color: #795019; background: var(--amber-soft); }
     .chart-note { margin: 13px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-    .chart-note strong { color: var(--ink); }
     .side { display: grid; gap: 20px; }
     .evidence { padding: 23px; }
     .evidence h2 { font-size: 19px; }
-    .detectors { margin-top: 17px; display: grid; gap: 11px; }
-    .detector { display: grid; grid-template-columns: 20px 1fr 48px; gap: 10px; align-items: center; font-size: 12px; }
-    .detector strong { font-weight: 650; }
-    .detector span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
-    .detector .track { height: 8px; }
-    .detector .bar { background: #9bab9d; }
-    .detector:first-child .bar { background: var(--green); }
     .evidence-footnote { margin: 14px 0 0; font-size: 11px; color: var(--muted); }
     .agreement { display: flex; align-items: baseline; gap: 7px; margin: 9px 0 5px; }
     .agreement strong { font-size: 39px; line-height: 1.1; letter-spacing: -1.5px; font-weight: 600; }
@@ -112,36 +98,17 @@
     .agreement-strip { display: flex; height: 9px; gap: 3px; margin: 16px 0 10px; }
     .agreement-strip .same { flex: 114; background: var(--green); border-radius: 4px 0 0 4px; }
     .agreement-strip .different { flex: 2; min-width: 6px; background: #c39b60; border-radius: 0 4px 4px 0; }
-    .agreement-legend { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
-    .takeaway { display: flex; align-items: flex-start; gap: 15px; margin-top: 20px; padding: 18px 22px; background: #e7ece0; border: 1px solid #d5decc; border-radius: 13px; }
-    .takeaway svg { flex: none; margin-top: 3px; }
-    .takeaway p { margin: 0; font-size: 13px; }
-    .takeaway strong { font-weight: 700; }
-    .caveat { margin: 16px 3px 20px; color: var(--muted); font-size: 11px; line-height: 1.65; }
-    .caveat strong { color: var(--ink); }
-    details { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-    summary { cursor: pointer; padding: 16px 0; font-size: 12px; font-weight: 650; }
-    .methods { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 32px; padding: 0 0 23px; color: var(--muted); font-size: 12px; }
-    .methods h3 { margin: 5px 0 7px; color: var(--ink); font-size: 13px; }
-    .methods p { margin: 0 0 9px; }
-    .methods ul { margin: 0; padding-left: 17px; }
-    .methods li + li { margin-top: 7px; }
-    code { font: .9em Consolas, monospace; overflow-wrap: anywhere; }
-    footer { display: flex; justify-content: space-between; gap: 12px; padding: 18px 0 24px; color: var(--muted); font-size: 10px; }
-    footer p { margin: 0; }
+    .caveat { margin: 16px 3px 24px; color: var(--muted); font-size: 11px; line-height: 1.65; }
     .skip { position: absolute; top: -60px; left: 16px; background: var(--card); padding: 8px; z-index: 1; }
     .skip:focus { top: 10px; }
 
     @media (max-width: 1000px) {
-      .hero { gap: 24px; grid-template-columns: 1fr 245px; }
       .model-pair { gap: 10px; }
       .model-pair strong { font-size: 25px; }
       .model-pair .plus { font-size: 20px; }
       .comparison { grid-template-columns: 1fr; }
       .side { grid-template-columns: 1fr 1fr; }
       .chart-card { padding: 24px; }
-      tbody th { width: 28%; }
-      .speed { width: 48%; }
     }
     @media (max-width: 600px) {
       .page { width: calc(100% - 32px); }
@@ -149,35 +116,30 @@
       .top-actions { gap: 0; }
       .offline { display: none; }
       .print-button { padding: 8px 11px; font-size: 11px; }
-      .hero { grid-template-columns: 1fr; padding-top: 28px; gap: 21px; }
       h1 { letter-spacing: -1px; }
       .lead { font-size: 14px; }
       .choice { padding: 19px; }
       .model-pair strong { font-size: 30px; }
       .choice .eyebrow { margin-bottom: 13px; }
-      .context { gap: 7px 15px; }
       .chart-card { padding: 20px 14px 16px; }
       .chart-scroll { margin-top: 18px; }
-      tbody th { width: 29%; font-size: 11px; }
-      .speed { min-width: 100px; }
+      tbody th { width: 38%; font-size: 11px; }
+      .speed { min-width: 70px; }
       tbody td { padding-right: 4px; padding-left: 4px; }
       .speed-top { gap: 4px; }
       .speed-value { font-size: 15px; }
-      .speed-time { font-size: 9px; }
       .status { padding: 3px 5px; font-size: 9px; }
-      .side, .methods { grid-template-columns: 1fr; }
+      .side { grid-template-columns: 1fr; }
       .evidence { padding: 21px; }
-      .takeaway { padding: 16px; gap: 10px; }
-      footer { flex-direction: column; gap: 5px; }
     }
     @media print {
       @page { size: A4 portrait; margin: 10mm; }
       body { background: white; font-size: 10px; line-height: 1.4; }
       .page { width: 100%; }
-      .skip, .top-actions, details { display: none; }
+      .skip, .top-actions { display: none; }
       .topbar { padding: 0 0 10px; }
       .brand { font-size: 16px; }
-      .hero { grid-template-columns: 1fr 205px; gap: 22px; padding: 14px 0 10px; }
+      .hero { padding: 20px 0; }
       h1 { font-size: 32px; }
       .lead { font-size: 12px; margin-top: 10px; }
       .choice { padding: 17px; }
@@ -185,7 +147,6 @@
       .model-pair strong { font-size: 22px; }
       .model-pair .plus { font-size: 16px; }
       .choice p:last-child { margin-top: 10px; padding-top: 10px; font-size: 10px; }
-      .context { padding-bottom: 15px; font-size: 9px; }
       .comparison { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 12px; }
       .chart-card { padding: 14px 10px; }
       h2 { font-size: 18px; }
@@ -194,20 +155,15 @@
       .evidence { padding: 12px; }
       .evidence h2 { font-size: 16px; }
       .chart-scroll { margin-top: 15px; overflow: visible; }
-      tbody th { padding-top: 12px; padding-bottom: 12px; font-size: 10px; width: 28%; }
+      tbody th { padding-top: 12px; padding-bottom: 12px; font-size: 10px; width: 36%; }
       tbody td { padding: 10px 4px; }
-      .speed { min-width: 86px; width: 43%; }
+      .speed { min-width: 86px; width: 38%; }
       .speed-value { font-size: 15px; }
-      .speed-time { font-size: 8px; }
       .status { font-size: 8px; padding: 3px 4px; }
       .chart-note, .evidence-footnote { font-size: 9px; }
       .agreement strong { font-size: 32px; }
-      .agreement-legend { font-size: 9px; }
-      .takeaway { margin-top: 10px; padding: 13px 16px; }
-      .takeaway p { font-size: 11px; }
       .caveat { font-size: 9px; margin: 12px 0; }
-      footer { padding: 8px 0 0; font-size: 8px; }
-      .card, .hero, .takeaway { break-inside: avoid; }
+      .card, .choice, .hero { break-inside: avoid; }
     }
   </style>
 </head>
@@ -231,89 +187,68 @@
 
     <main id="main">
       <section class="hero" aria-labelledby="title">
-        <div>
-          <p class="eyebrow">Izbor modela / pregled eksperimenata</p>
-          <h1>Brže nije bolje<br>ako <span>propusti telefon.</span></h1>
-          <p class="lead">Uporedili smo YOLO11 nano, small i medium modele, njihove kombinacije i način izvršavanja. Cilj nije najveći FPS, već brzina koja ne dolazi po cenu ključne detekcije.</p>
-        </div>
-        <aside class="choice" aria-label="Izdvojena kombinacija za dalju evaluaciju">
-          <p class="eyebrow">Kompromis koji se izdvojio</p>
-          <div class="model-pair">
-            <div><strong>Small</strong><small>model za pozu</small></div>
-            <span class="plus" aria-hidden="true">+</span>
-            <div><strong>Medium</strong><small>model za telefon</small></div>
-          </div>
-          <p>Manje računanja za pozu. Jači detektor tamo gde je razlika bila presudna.</p>
-        </aside>
+        <h1 id="title">Brzina nije <span>jedini kriterijum.</span></h1>
+        <p class="lead">Testirali smo YOLO11 modele različitih veličina i njihove kombinacije.</p>
       </section>
-
-      <div class="context" aria-label="Uslovi zabeleženih eksperimenata">
-        <span><strong>Hardver</strong> Intel Xeon Platinum 8573C · CPU, bez GPU-a</span>
-        <span><strong>Obrada</strong> stride 8 · bez detekcije ruku na volanu</span>
-        <span><strong>Izvor</strong> sačuvani benchmark rezultati, ne merenje uživo</span>
-      </div>
 
       <div class="comparison">
         <section class="card chart-card" aria-labelledby="comparison-title">
-          <span class="section-label">01 / Brzina i funkcionalni kompromis</span>
-          <h2 id="comparison-title">Šest konfiguracija. Različita cena brzine.</h2>
-          <p class="section-intro">Poza pronalazi ključne tačke tela; drugi YOLO model pronalazi telefon.</p>
+          <h2 id="comparison-title">6 testiranih konfiguracija</h2>
 
           <div class="chart-scroll">
             <table>
-              <caption>n = nano · s = small · m = medium. Dužina trake prikazuje FPS, na skali 0–12.</caption>
               <thead>
                 <tr>
                   <th scope="col">Poza + telefon</th>
-                  <th scope="col">Brzina obrade · FPS / ms po frejmu</th>
+                  <th scope="col">Brzina · FPS</th>
                   <th scope="col">Upotreba telefona¹</th>
                 </tr>
               </thead>
               <tbody>
                 <tr data-models="m+m" data-runtime="pytorch" data-fps="3.5">
-                  <th scope="row">m + m<small>PyTorch · polazna tačka</small></th>
+                  <th scope="row">Medium + Medium<small>PyTorch</small></th>
                   <td class="speed">
-                    <div class="speed-top"><span class="speed-value">3,5</span><span class="speed-time">283–297 ms</span></div>
+                    <div class="speed-top"><span class="speed-value">3,5</span></div>
                     <div class="track" aria-hidden="true"><div class="bar" style="--bar: 29.1667%"></div></div>
                   </td>
                   <td class="outcome"><span class="status">Prepoznata</span></td>
                 </tr>
                 <tr class="miss" data-models="s+s" data-runtime="pytorch" data-fps="7.2">
-                  <th scope="row">s + s<small>PyTorch · oba manja</small></th>
+                  <th scope="row">Small + Small<small>PyTorch</small></th>
                   <td class="speed">
-                    <div class="speed-top"><span class="speed-value">7,2</span><span class="speed-time">137–140 ms</span></div>
+                    <div class="speed-top"><span class="speed-value">7,2</span></div>
                     <div class="track" aria-hidden="true"><div class="bar" style="--bar: 60%"></div></div>
                   </td>
                   <td class="outcome"><span class="status missed">Propuštena</span></td>
                 </tr>
                 <tr class="miss" data-models="n+n" data-runtime="pytorch" data-fps="11.1">
-                  <th scope="row">n + n<small>PyTorch · najbrži par</small></th>
+                  <th scope="row">Nano + Nano<small>PyTorch</small></th>
                   <td class="speed">
-                    <div class="speed-top"><span class="speed-value">11,1</span><span class="speed-time">90 ms</span></div>
+                    <div class="speed-top"><span class="speed-value">11,1</span></div>
                     <div class="track" aria-hidden="true"><div class="bar" style="--bar: 92.5%"></div></div>
                   </td>
                   <td class="outcome"><span class="status missed">Propuštena</span></td>
                 </tr>
                 <tr class="hybrid" data-models="s+m" data-runtime="pytorch" data-fps="4.5">
-                  <th scope="row">s + m<small>PyTorch · manja poza</small></th>
+                  <th scope="row">Small + Medium<small>PyTorch</small></th>
                   <td class="speed">
-                    <div class="speed-top"><span class="speed-value">4,5</span><span class="speed-time">221 ms</span></div>
+                    <div class="speed-top"><span class="speed-value">4,5</span></div>
                     <div class="track" aria-hidden="true"><div class="bar" style="--bar: 37.5%"></div></div>
                   </td>
                   <td class="outcome"><span class="status">Prepoznata</span></td>
                 </tr>
                 <tr class="miss" data-models="m+s" data-runtime="pytorch" data-fps="4.7">
-                  <th scope="row">m + s<small>PyTorch · manji telefon</small></th>
+                  <th scope="row">Medium + Small<small>PyTorch</small></th>
                   <td class="speed">
-                    <div class="speed-top"><span class="speed-value">4,7</span><span class="speed-time">213 ms</span></div>
+                    <div class="speed-top"><span class="speed-value">4,7</span></div>
                     <div class="track" aria-hidden="true"><div class="bar" style="--bar: 39.1667%"></div></div>
                   </td>
                   <td class="outcome"><span class="status missed">Propuštena</span></td>
                 </tr>
                 <tr class="runtime" data-models="s+m" data-runtime="openvino" data-fps="6.2">
-                  <th scope="row">s + m<small>OpenVINO · dinamički ulaz telefona</small></th>
+                  <th scope="row">Small + Medium<small>OpenVINO</small></th>
                   <td class="speed">
-                    <div class="speed-top"><span class="speed-value">6,2*</span><span class="speed-time">158–162 ms</span></div>
+                    <div class="speed-top"><span class="speed-value">6,2*</span></div>
                     <div class="track" aria-hidden="true"><div class="bar" style="--bar: 51.6667%"></div></div>
                   </td>
                   <td class="outcome"><span class="status">Prepoznata</span></td>
@@ -321,76 +256,32 @@
               </tbody>
             </table>
           </div>
-          <p class="chart-note">¹ Status se odnosi na <strong>zahtevan kontrolni klip 084339</strong>, ne na ukupnu tačnost. FPS meri brzinu obrade, ne vreme do upozorenja vozaču.</p>
+          <p class="chart-note">¹ Detekcija upotrebe telefona u zahtevnom klipu 084339.</p>
         </section>
 
         <div class="side">
-          <section class="card evidence" aria-labelledby="phone-title">
-            <span class="section-label">02 / Zašto zadržati jači detektor?</span>
-            <h2 id="phone-title">Telefon se lakše izgubi smanjivanjem modela.</h2>
-            <p class="section-intro">Broj frejmova sa pronađenim telefonom, od 36 uzorkovanih u klipu 084339.</p>
-            <div class="detectors" aria-label="Rezultati pojedinačnih modela za telefon">
-              <div class="detector"><strong>m</strong><div class="track" aria-hidden="true"><div class="bar" style="--bar: 52.7778%"></div></div><span>19 / 36</span></div>
-              <div class="detector"><strong>s</strong><div class="track" aria-hidden="true"><div class="bar" style="--bar: 16.6667%"></div></div><span>6 / 36</span></div>
-              <div class="detector"><strong>n</strong><div class="track" aria-hidden="true"><div class="bar" style="--bar: 5.5556%"></div></div><span>2 / 36</span></div>
+          <aside class="choice" aria-label="Zaključak poređenja modela">
+            <p class="eyebrow">Kompromis koji se izdvojio</p>
+            <div class="model-pair">
+              <div><strong>Small</strong><small>poza</small></div>
+              <span class="plus" aria-hidden="true">+</span>
+              <div><strong>Medium</strong><small>telefon</small></div>
             </div>
-            <p class="evidence-footnote">Rezultat jednog zahtevnog primera, ne procenat tačnosti celog sistema.</p>
-          </section>
+            <p>Najbrži modeli propuštaju telefon. Zadržali smo jači detektor telefona.</p>
+          </aside>
 
           <section class="card evidence" aria-labelledby="agreement-title">
-            <span class="section-label">03 / Šira provera kombinacije</span>
-            <h2 id="agreement-title">Slaganje, ne tačnost.</h2>
+            <h2 id="agreement-title">Provera na 116 klipova</h2>
             <div class="agreement"><strong>114</strong><span>/ 116 klipova</span></div>
-            <p class="section-intro">Ista odluka „ima / nema upotrebe telefona” za osnovnu i OpenVINO konfiguraciju, prema izveštaju.</p>
+            <p class="section-intro">Ista odluka o upotrebi telefona.<br>OpenVINO kombinacija vs. osnovni modeli.</p>
             <div class="agreement-strip" aria-hidden="true"><span class="same"></span><span class="different"></span></div>
-            <div class="agreement-legend"><span>114 podudarnih</span><span>2 različita</span></div>
-            <p class="evidence-footnote">Jedan klip dobija detekciju, drugi je gubi. Ovo <strong>nije 98,3% tačnosti</strong> niti dokaz da su svi detektori očuvali kvalitet.</p>
+            <p class="evidence-footnote">Slaganje rezultata, ne mera tačnosti.</p>
           </section>
         </div>
       </div>
 
-      <div class="takeaway">
-        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M5 12h14m-5-5 5 5-5 5" stroke="#2a6950" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <p><strong>Zaključak: odgovarajući model za svaki zadatak, ne najmanji model po svaku cenu.</strong><br>
-          Small + medium povećava zabeleženu propusnost sa 3,5 na 4,5 FPS. Uz OpenVINO je zabeleženo 6,2 FPS* — oko 1,8× u odnosu na polaznu konfiguraciju.</p>
-      </div>
-      <p class="caveat"><strong>* Važno za tumačenje:</strong> 6,2 FPS je ranije prijavljen rezultat samostalnog izvršavanja; naknadno profilisanje ga nije reprodukovalo. Paralelni testovi dele CPU i nisu direktno uporedivi. Ove brojke nisu merenje na hardveru vozila. Kvalitet detekcije pogleda i zatvaranja očiju zahteva zasebnu proveru.</p>
-
-      <details>
-        <summary>Metodologija, ograničenja i izvori</summary>
-        <div class="methods">
-          <section>
-            <h3>Šta je upoređeno</h3>
-            <p>Raniji testovi koriste <code>live.py --no-hands --stride 8</code>, uz izbor pose i phone modela. Izvorni video ima 30 FPS; podrazumevana veličina ulaza modela je 640. MediaPipe je zaseban deo obrade lica. „Bez ruku” isključuje detekciju ruku na volanu, ne svaku moguću pretragu šake u phone logici.</p>
-            <p>Kontrolni klipovi su 084339, 092916 i 014837. Sačuvani rezultati mešovitih PyTorch konfiguracija pokrivaju 084339. Postoji i OpenVINO obrada svih 116 klipova.</p>
-          </section>
-          <section>
-            <h3>Kako čitati brzinu</h3>
-            <p>FPS u tabeli je recipročna vrednost prosečnog vremena obrade, zaokružena u izvornom izveštaju. Ne uključuje učitavanje modela i kompletnu putanju do upozorenja. Brojevi nisu novo merenje trenutne verzije koda.</p>
-            <p>Logovi paralelne obrade 116 klipova imaju medijanu prosečnog vremena od 633 ms/frejm. To nije isti uslov kao prijavljenih 158–162 ms za samostalno izvršavanje. Za ponovljivo poređenje treba pokretati jednu konfiguraciju u isto vreme, sa istim uslovima i ponavljanjima.</p>
-          </section>
-          <section>
-            <h3>Šta ostaje otvoreno</h3>
-            <p>114/116 meri slaganje sa početnom konfiguracijom, a ne sa označenom stvarnošću. Razlike su klip 021132 (nova kratka detekcija) i 023609 (propuštena upotreba). Slaganje uključuje i klipove bez telefona.</p>
-            <p>Na tri kontrolna klipa phone izlazi osnovne i OpenVINO konfiguracije se poklapaju, ali izlazi za pogled i zatvaranje očiju nisu svi isti. Na širem testu prepoznato je jedno od dva ranije prepoznata zevanja. Zato ne tvrdimo „bez gubitka tačnosti”. Kod je menjan i nakon ovih eksperimenata.</p>
-          </section>
-          <section>
-            <h3>Izvori u repozitorijumu</h3>
-            <ul>
-              <li><a href="RivianHackatonEngine/CVEngine/BENCHMARKS.md">BENCHMARKS.md</a> — izvor prijavljenih brzina, pojedinačnih modela i poređenja 116 klipova.</li>
-              <li><a href="RivianHackatonEngine/CVEngine/PHONE_IMPROVEMENTS.md">PHONE_IMPROVEMENTS.md</a> — poznata ograničenja i prethodni eksperimenti.</li>
-            </ul>
-            <p>CSV potvrda: <code>CVEngine\out_model_cmp</code>. Provera pune obrade: <code>CVEngine\out_ov_sweep</code> (116 CSV-ova i logova). Ovi lokalni artefakti su git-ignored i ne moraju biti prisutni u novom klonu. Sama stranica ih ne učitava i radi i kada se kopira odvojeno; linkovi ka izvorima zahtevaju repozitorijum.</p>
-          </section>
-        </div>
-      </details>
+      <p class="caveat">Raniji CPU testovi, bez GPU-a i detekcije ruku na volanu, stride 8.<br>* 6,2 FPS je ranije zabeležen rezultat; nije ponovljen u naknadnom profilisanju.</p>
     </main>
-    <footer>
-      <p>DriveScore · Inženjerski pregled benchmarka · 07.11.2026.</p>
-      <p>Bez servera, internet veze ili dodatnih biblioteka.</p>
-    </footer>
   </div>
 </body>
 </html>
