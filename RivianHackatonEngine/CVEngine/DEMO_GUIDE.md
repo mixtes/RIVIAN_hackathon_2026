@@ -41,26 +41,25 @@ Every new terminal: `cd <repo>\RivianHackatonEngine\CVEngine` and `.\venv\Script
 
 ## 3. Run the demo videos
 
+The demo videos are in `RivianHackatonEngine\CVEngine\use_this_videos\`. Run one command at a time from
+`RivianHackatonEngine\CVEngine` (with the environment active).
+
 **Fast setup** (after `export_openvino.py`; Intel CPU):
 ```powershell
-python live.py "videos\Hackathon dataset 2026\08_14_62_084339_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/ --forward-start --text-scale 0.75
+python live.py "use_this_videos\ AAA.mp4" --realtime --show --no-hands --pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/ --forward-start --text-scale 0.75
+python live.py "use_this_videos\AAA05_23_62_010122_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/ --forward-start --text-scale 0.75
+python live.py "use_this_videos\AAA08_14_62_084339_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/ --forward-start --text-scale 0.75
+python live.py "use_this_videos\AAA08_14_62_092916_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose_openvino_model/ --phone-model yolo11m_dyn_openvino_model/ --forward-start --text-scale 0.75
 ```
 
 **Standard setup** (any computer, no export needed; slower on CPU):
 ```powershell
-python live.py "videos\Hackathon dataset 2026\08_14_62_084339_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose.pt --forward-start --text-scale 0.75
+python live.py "use_this_videos\ AAA.mp4" --realtime --show --no-hands --pose-model yolo11s-pose.pt --forward-start --text-scale 0.75
+python live.py "use_this_videos\AAA05_23_62_010122_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose.pt --forward-start --text-scale 0.75
+python live.py "use_this_videos\AAA08_14_62_084339_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose.pt --forward-start --text-scale 0.75
+python live.py "use_this_videos\AAA08_14_62_092916_video_inCabin.mp4" --realtime --show --no-hands --pose-model yolo11s-pose.pt --forward-start --text-scale 0.75
 ```
-
-Demo videos (replace the file name in the command):
-
-| # | Video | What to look for |
-|---|---|---|
-| 1 | `08_14_62_084339_video_inCabin.mp4` | phone held low in the palm: PHONE_USE from ~16 s |
-| 2 | *(to be added)* | |
-
-Other clips that show the system well: `05_23_62_010741` (phone use the whole clip), `08_14_62_092916` (phone use),
-`05_23_62_010829` (phone lying in the tray: correctly **no** phone alert), `08_14_62_084539` (a yawn).
-
+Note: the first file name starts with a space (`" AAA.mp4"`); keep the quotes exactly as written.
 A window opens after ~10 s of model loading and plays the video at its real speed. Press **q** in the window to stop.
 
 ## 4. What you see
