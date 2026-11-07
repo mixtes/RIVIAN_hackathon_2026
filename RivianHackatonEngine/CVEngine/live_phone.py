@@ -148,8 +148,26 @@ class LatestFrame:
 
 
 def record_codec(path):
-    """VP8 for .webm (plays in VS Code and browsers), mp4v otherwise."""
+    """VP8 for .webm (plays in VS Code and browsers), mp4v otherwise (converted by to_h264 afterwards)."""
     return 'VP80' if path.lower().endswith('.webm') else 'mp4v'
+
+
+def to_h264(path):
+    """Re-encode an mp4v .mp4 to H.264 so VS Code and browsers can play it. OpenCV's own H.264 writer
+    needs a matching OpenH264 DLL, so this uses the ffmpeg from imageio-ffmpeg; keeps mp4v if unavailable."""
+    if not path.lower().endswith('.mp4') or not os.path.isfile(path):
+        return False
+    try:
+        import imageio_ffmpeg
+        import subprocess
+        tmp = path[:-4] + '.h264.mp4'
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-y', '-loglevel', 'error', '-i', path, '-c:v', 'libx264',
+                        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', tmp], check=True)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:                      # noqa: BLE001  (the mp4v file is still usable in VLC)
+        print(f'recording kept as mp4v (not playable in VS Code): {e}', flush=True)
+        return False
 
 
 def load_safety_system():
@@ -185,8 +203,8 @@ def main():
     parser.add_argument('--dark-conf', type=float, default=DARK_CONF,
                         help='confidence threshold for the dark-frame detector')
     parser.add_argument('--record', default=None,
-                        help='save each processed frame with its detections; .webm (VP8) plays in VS Code, '
-                             '.mp4 (mp4v) needs an external player such as VLC')
+                        help='save each processed frame with its detections (.mp4 is converted to H.264, '
+                             '.webm is VP8; both play in VS Code)')
     parser.add_argument('--no-hands', action='store_true',
                         help='skip hand landmarks; a still phone while looking down is then never confirmed')
     args = parser.parse_args()
@@ -322,6 +340,7 @@ def main():
                 f.close()
         if recorder is not None:
             recorder.release()
+            to_h264(args.record)
         if args.show:
             cv2.destroyAllWindows()
 
