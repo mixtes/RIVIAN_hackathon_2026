@@ -1,7 +1,12 @@
 """Step 3: annotated video (frame number, skeleton, wheel zone, phones, alerts) + a key frame per alert.
 Usage: python3 render.py my_video.mp4 [out/cache.npz]
 """
-import cv2, numpy as np, csv, subprocess, sys, os
+try:
+    import cv2  # type: ignore
+except ImportError as exc:
+    raise SystemExit("OpenCV is required to run render.py. Install opencv-python.") from exc
+
+import numpy as np, csv, subprocess, sys, os
 import rules
 from auto_wheel import tolerance_outline
 

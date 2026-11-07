@@ -22,6 +22,7 @@ import hands_pose
 import cv_flags, eyes_off_road, eyes_closed, occupancy, slump
 
 CASE = 'HANDS_OFF_THE_WHEEL'
+AWAY_ASLEEP_S = 3.0  # head not visible this long while the driver is still seen -> asleep / collapsed evidence
 HOLD_S = 1.0        # both hands observed away for this long -> confirmed
 CANDIDATE_RESET_S = 0.3   # a hand seen near the wheel this long cancels an unconfirmed candidate
 CLEAR_S = 0.5       # a hand seen near the wheel this long ends a confirmed event
@@ -169,6 +170,12 @@ def main():
     ap.add_argument('--no-sleep-bit', action='store_true',
                     help='do not put the asleep / slumped state into bit 0x80 (it is only logged and drawn)')
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
+    ap.add_argument('--no-hands', action='store_true',
+                    help='turn hands-off-wheel detection off completely: no wheel calibration (the slow YOLOE model is '
+                         'not even loaded), no hand tracking; bit 0x20 is always 0')
+    ap.add_argument('--forward-start', action='store_true',
+                    help='assume the driver looks at the road in the first ~1.5 s: that head pose becomes the fixed '
+                         'forward baseline (short warm-up, no prior, no drift)')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     args = ap.parse_args()
     stream_out = sys.stdout
@@ -182,8 +189,9 @@ def main():
     cal = auto_wheel.WheelCalibrator(prior_fallback=True)
     print(f'device={device}; loading models and warming up...', flush=True)
     pose.predict(np.zeros((640, 640, 3), np.uint8), imgsz=POSE_SIZE, verbose=False, device=device)
-    cal.model = auto_wheel.load_model()
-    cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
+    if not args.no_hands:
+        cal.model = auto_wheel.load_model()
+        cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
 
     faces = None
     if args.head == 'face':
@@ -198,7 +206,7 @@ def main():
     bcsv = open(args.flags, 'w') if args.flags else None
     if bcsv:
         bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants\n')
-    head = eyes_off_road.HeadPoseDetector()
+    head = eyes_off_road.HeadPoseDetector(forward_start=args.forward_start)
     eyes = eyes_closed.EyeClosureDetector()
     slumper = slump.SlumpDetector()
     people = occupancy.OccupancyCounter()
@@ -229,7 +237,7 @@ def main():
             if (frame_no - 1) % args.stride:
                 continue
             t0 = time.monotonic()
-            if cal.status == 'collecting':
+            if cal.status == 'collecting' and not args.no_hands:
                 if cal.add_frame(frame) == 'collecting':
                     continue
                 if cal.status == 'locked':
@@ -247,18 +255,23 @@ def main():
                                     result.keypoints.data.cpu().numpy(), (frame.shape[1], frame.shape[0]))
             else:
                 occ = people.update(t, [], [], [], (frame.shape[1], frame.shape[0]))
-            states, dbg = hands.update(frame, kp)
+            if args.no_hands:
+                states, dbg = ('unknown', 'unknown'), {'points': [None, None], 'sources': ('-', '-'), 'landmarks': []}
+            else:
+                states, dbg = hands.update(frame, kp)
             points = dbg['points']
             label = classify(states)
             face = faces.measure(frame, kp) if faces else None
-            obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]))
-            hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
+            obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]), driver_present=occ.zones['driver'] >= 1)
+            hands_bit = 0 if args.no_hands else hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
             head_bit = head_filter.update(t, head.raw_bit(obs))
             ears = [e for e in ((face.ear_l, face.ear_r) if face else ()) if e is not None]
             eye = eyes.update(t, obs.blink if obs.source == 'face' else None, obs.gaze_down or 0.0,
                               float(np.mean(ears)) if ears else None, obs.pitch_delta if obs.source == 'face' else None)
             body = slumper.update(t, kp)
             sleep_bits = [b for b in (eyes.raw_bit(eye), slumper.raw_bit(body)) if b is not None]
+            if obs.state == 'away' and obs.away_s >= AWAY_ASLEEP_S:       # head hidden for long, the eyes cannot be seen
+                sleep_bits.append(1)
             sleep_bit = sleep_filter.update(t, (1 if 1 in sleep_bits else 0) if sleep_bits else None)
             asleep = bool(sleep_bit) and not args.no_sleep_bit
             flags = cv_flags.pack_flags(asleep=asleep,
@@ -304,9 +317,10 @@ def main():
             lat.append(time.monotonic() - t0)
             if args.show or args.save:
                 view = frame.copy()
-                cv2.polylines(view, [wheel], True, (255, 255, 0), 4)
-                for o in auto_wheel.tolerance_outline(wheel, margin, (view.shape[1], view.shape[0])):
-                    cv2.polylines(view, [o], True, (255, 100, 0), 3)
+                if wheel is not None:
+                    cv2.polylines(view, [wheel], True, (255, 255, 0), 4)
+                    for o in auto_wheel.tolerance_outline(wheel, margin, (view.shape[1], view.shape[0])):
+                        cv2.polylines(view, [o], True, (255, 100, 0), 3)
                 if kp is not None:
                     for a, b in rules_sk:
                         if kp[a, 2] >= rules.KP_CONF and kp[b, 2] >= rules.KP_CONF:
@@ -327,16 +341,19 @@ def main():
                         for q, on in zip(pts, inside):
                             cv2.circle(view, (int(q[0]), int(q[1])), 6, (0, 220, 0) if on else (0, 0, 255), -1)
                 color = {'near': (0, 200, 0), 'off': (0, 0, 255), 'unknown': (160, 160, 160)}[label]
-                cv2.putText(view, f'{label.upper()}  L:{states[0]}({dbg["sources"][0]}) '
-                                  f'R:{states[1]}({dbg["sources"][1]})  t={t:.2f}s',
+                cv2.putText(view, f't={t:.2f}s  HANDS OFF-DETECTION DISABLED' if args.no_hands else
+                            f'{label.upper()}  L:{states[0]}({dbg["sources"][0]}) '
+                            f'R:{states[1]}({dbg["sources"][1]})  t={t:.2f}s',
                             (30, 80), 0, 2.0, color, 5)
                 if machine.confirmed:
                     cv2.putText(view, CASE, (30, 160), 0, 2.2, (0, 0, 255), 6)
                 head_color = {'turned': (0, 0, 255), 'down': (0, 0, 255), 'up': (0, 0, 255),
-                              'forward': (0, 200, 0), 'unknown': (160, 160, 160)}[obs.state]
+                              'away': (0, 0, 255), 'forward': (0, 200, 0), 'unknown': (160, 160, 160)}[obs.state]
                 unit = ' deg' if obs.source == 'face' else ''
                 if obs.state == 'unknown':
                     head_text = f'HEAD UNKNOWN ({obs.reason})'
+                elif obs.state == 'away':
+                    head_text = 'HEAD NOT VISIBLE (turned away or down)'
                 elif obs.state == 'turned':
                     head_text = f'HEAD TURNED {obs.direction}  yaw {obs.yaw_delta:+.0f}{unit}' if unit else \
                         f'HEAD TURNED {obs.direction}  yaw {obs.yaw_delta:+.2f}'
