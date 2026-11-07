@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- All user-facing strings (spec §14). English for the MVP. -->
 <resources>
-    <string name="app_name">DriveScore</string>
+    <string name="app_name">RIVAL</string>
     <string name="service_running">Driver monitoring is active</string>
     <string name="engine_not_responding">Engine not responding</string>
     <string name="result_invalid">Result invalid</string>

@@ -3,6 +3,7 @@ package com.hackathon.drivescore.feature.lock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -39,6 +40,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,6 +81,12 @@ fun DriverSelectScreen(
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize().padding(CarDimens.ScreenPadding)) {
+        Image(
+            painterResource(R.drawable.rival_logo),
+            contentDescription = stringResource(R.string.app_name),
+            modifier = Modifier.height(112.dp).align(Alignment.CenterHorizontally),
+        )
+        VSpace(Space.L)
         Text(stringResource(R.string.who_is_driving), style = MaterialTheme.typography.headlineLarge)
         VSpace(Space.XL)
         if (s.loaded && s.tiles.isEmpty()) {

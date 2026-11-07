@@ -68,6 +68,11 @@ WARMUP_MIN_SAMPLES = 15     # ... and at least this many observations must have 
 BIN_FACE, BIN_POSE = 2.0, 0.02   # histogram bin of the baseline mode, degrees / proxy units
 MEASURED_AFTER = 30         # observations after which a baseline is reported as 'measured'
 BASELINE_SAMPLES = 900      # newest observations kept for the running median
+FORWARD_SEED_S = 2.0        # forward_start mode: nothing is reported for this long (the baseline is being collected)
+FORWARD_LOCK_S = 4.0        # ... the baseline is the most frequent pose of the first FORWARD_LOCK_S seconds, then frozen
+FORWARD_SEED_MIN = 5        # ... a source needs at least this many observations to be frozen
+LOST_GAP_S = 2.0            # 'away' ends when nothing shows the head is still lost for this long
+LOST_S = 1.0                # head not measurable for this long while the driver is still seen -> state 'away'
 
 
 def head_measure(kp) -> Tuple[Optional[float], Optional[float], Optional[str]]:
@@ -101,9 +106,15 @@ class RunningBaseline:
         self.prior, self.limit, self.bin = prior, limit, bin_width
         self.prior_weight = PRIOR_WEIGHT
         self.samples = deque(maxlen=BASELINE_SAMPLES)
+        self.locked = None                  # forward_start: fixed baseline taken from the first seconds
 
     def add(self, value):
-        self.samples.append(value)
+        if self.locked is None:
+            self.samples.append(value)
+
+    def lock(self):
+        """Freeze the baseline at the plain median of what was observed so far (no prior, no weighting)."""
+        self.locked = float(self.value)
 
     @property
     def n(self):
@@ -111,6 +122,8 @@ class RunningBaseline:
 
     @property
     def value(self):
+        if self.locked is not None:
+            return self.locked
         if not self.samples:
             return self.prior
         values = np.concatenate([np.full(int(round(self.prior_weight)), self.prior), np.fromiter(self.samples, float)])
@@ -128,7 +141,7 @@ class RunningBaseline:
 
 @dataclass
 class HeadObservation:
-    state: str                          # 'forward' | 'turned' | 'down' | 'up' | 'unknown'
+    state: str                          # 'forward' | 'turned' | 'down' | 'up' | 'away' (head not visible) | 'unknown'
     yaw: Optional[float]                # degrees for source 'face', proxy units for source 'pose'
     pitch: Optional[float]
     yaw_delta: Optional[float]          # yaw - yaw baseline, same units
@@ -139,6 +152,7 @@ class HeadObservation:
     source: Optional[str] = None        # 'face' | 'pose' | None when unknown
     blink: Optional[float] = None       # eye closure 0..1 (face only), evidence for sleep detection
     gaze_down: Optional[float] = None   # 0..1 (face only)
+    away_s: float = 0.0                 # state 'away': seconds the head has been unmeasurable (sleep / collapse evidence)
 
     @property
     def delta(self):
@@ -152,8 +166,10 @@ class _Source:
         self.yaw_base = RunningBaseline(prior_yaw, yaw_range, bin_width)
         self.pitch_base = RunningBaseline(prior_pitch, pitch_range, bin_width)
         self.yaw_t, self.down_t, self.up_t = yaw, down, up
+        self.seeding = False                # forward_start: still collecting the 'looking at the road' samples
 
     def feed(self, yaw, pitch, turned_now):
+        turned_now = turned_now and not self.seeding        # while seeding every observation counts as forward
         self.yaw_base.add(yaw)
         if not turned_now:
             self.pitch_base.add(pitch)
@@ -162,7 +178,12 @@ class _Source:
 class HeadPoseDetector:
     """Causal: update(t, kp, face) uses only observations up to t. reset() between unrelated clips and after a seek."""
 
-    def __init__(self):
+    def __init__(self, forward_start=False, seed_s=FORWARD_SEED_S, lock_s=FORWARD_LOCK_S):
+        """forward_start=True: assume the driver mostly looks at the road during the first lock_s seconds. The most
+        frequent head pose of that time (a mode, so a glance at the camera or a passenger does not matter) becomes a
+        FIXED baseline per source: no prior, no long learning, no drift. Nothing is reported for the first seed_s
+        seconds; from then on the baseline is the running mode, frozen at lock_s."""
+        self.forward_start, self.seed_s, self.lock_s = forward_start, seed_s, lock_s
         self.reset()
 
     def reset(self):
@@ -174,6 +195,12 @@ class HeadPoseDetector:
         self._rate_t0 = self._rate_n = None
         self._pos = deque(maxlen=POSITION_SAMPLES)
         self._turned = self._down = self._up = False
+        self._lost_since = self._lost_seen = None
+        if self.forward_start:
+            for source in self.sources.values():
+                source.seeding = True
+                source.yaw_base.prior_weight = source.pitch_base.prior_weight = 0
+                source.yaw_base.limit = source.pitch_base.limit = 1e9      # no prior: every observation counts equally
 
     @property
     def yaw_base(self):                 # kept for callers and tests of the pose source
@@ -193,7 +220,7 @@ class HeadPoseDetector:
         yaw_delta = yaw - base_yaw
         turned_now = abs(yaw_delta) >= src.yaw_t[1 if self._turned else 0]
         src.feed(yaw, pitch, turned_now)
-        source = 'measured' if src.yaw_base.n >= MEASURED_AFTER else 'prior'
+        source = 'measured' if src.yaw_base.n >= MEASURED_AFTER or src.yaw_base.locked is not None else 'prior'
         blink, gaze_down = evidence if evidence else (None, None)
         self._turned = turned_now
         if turned_now:
@@ -234,15 +261,42 @@ class HeadPoseDetector:
             face.pitch_base.prior = float(np.clip(feats @ FWD_PITCH_COEF, *FWD_PITCH_LIMITS))
             face.yaw_base.limit, face.pitch_base.limit = POS_YAW_RANGE, POS_PITCH_RANGE
 
-    def update(self, t, kp, face=None, frame_size=None):
+    def update(self, t, kp, face=None, frame_size=None, driver_present=False):
+        """Calibrated head observation, plus: a head that cannot be measured for LOST_S while the driver is still
+        seen (bent down, turned fully away) is state 'away', which counts as off road. 'Still seen' = the pose
+        keypoints exist with a weak head, or driver_present (e.g. the occupancy counter sees someone in the driver
+        zone) although the pose model gave no driver keypoints."""
+        obs = self._calibrated_update(t, kp, face, frame_size)
+        lost = obs.state == 'unknown' and (obs.reason == 'low_confidence' or (obs.reason == 'no_driver' and driver_present))
+        if self._t0 is None or obs.state == 'forward':
+            self._lost_since = self._lost_seen = None
+            return obs
+        if lost or (obs.state in ('turned', 'down', 'up') and self._lost_since is not None):
+            if self._lost_since is None:
+                self._lost_since = t
+            self._lost_seen = t
+        elif self._lost_seen is not None and t - self._lost_seen > LOST_GAP_S:
+            self._lost_since = self._lost_seen = None           # no sign of the driver for a while: stop
+        if (self._lost_since is not None and obs.state == 'unknown' and obs.reason != 'calibrating'
+                and t - self._lost_since >= LOST_S):
+            return HeadObservation('away', None, None, None, None, 'away', obs.reason, obs.baseline_source, None,
+                                   away_s=t - self._lost_since)
+        return obs
+
+    def _calibrated_update(self, t, kp, face=None, frame_size=None):
         """kp: pose keypoints of the driver or None. face: head_face.FaceMeasure or None. frame_size: (width, height)
         of the frame; with it the forward angle is predicted from the head position (without it, a fixed prior).
         The first WARMUP_S seconds only calibrate: the state is 'unknown' (reason 'calibrating'), so the bit stays 0."""
-        self._track_position(kp, frame_size)
-        self._track_rate(t, kp, face)
+        if not self.forward_start:
+            self._track_position(kp, frame_size)
+            self._track_rate(t, kp, face)
+        else:
+            self._lock_seeded(t)
         obs = self._update(t, kp, face)
         if obs.state != 'unknown' and self._t0 is None:
             self._t0 = t
+        if self.forward_start:
+            return self._forward_start(t, obs)
         if obs.state == 'unknown' and obs.reason != 'calibrating' or self._t0 is None:
             return obs
         n = self.sources['face'].yaw_base.n + self.sources['pose'].yaw_base.n
@@ -251,6 +305,24 @@ class HeadPoseDetector:
         self._turned = self._down = self._up = False
         return HeadObservation('unknown', obs.yaw, obs.pitch, None, None, None, 'calibrating', 'prior', obs.source,
                                obs.blink, obs.gaze_down)
+
+    def _lock_seeded(self, t):
+        """After the seed window, freeze each source that collected enough observations at their median."""
+        if self._t0 is None or t - self._t0 < self.lock_s:
+            return
+        for source in self.sources.values():
+            if source.seeding and source.yaw_base.n >= FORWARD_SEED_MIN:
+                source.yaw_base.lock()
+                source.pitch_base.lock()
+                source.seeding = False
+
+    def _forward_start(self, t, obs):
+        """Inside the seed window report 'unknown' (bit 0); afterwards decisions use the fixed baseline."""
+        if self._t0 is not None and t - self._t0 < self.seed_s:
+            self._turned = self._down = self._up = False
+            return HeadObservation('unknown', obs.yaw, obs.pitch, None, None, None, 'calibrating', 'prior',
+                                   obs.source, obs.blink, obs.gaze_down)
+        return obs
 
     def _update(self, t, kp, face=None):
         pose_yaw, pose_pitch, reason = head_measure(kp)
@@ -283,7 +355,7 @@ class HeadPoseDetector:
         """1 = off road (turned, down or up), 0 = forward, None = could not observe (what FlickerFilter expects)."""
         if observation.state == 'unknown':
             return None
-        return 0 if observation.state == 'forward' else 1
+        return 0 if observation.state == 'forward' else 1       # turned, down, up, away
 
 
 HeadTurnDetector = HeadPoseDetector       # the earlier name

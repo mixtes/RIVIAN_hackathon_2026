@@ -36,6 +36,7 @@ import hands_pose
 import cv_flags, eyes_off_road, eyes_closed, occupancy, slump, yawn
 
 CASE = 'HANDS_OFF_THE_WHEEL'
+AWAY_ASLEEP_S = 3.0  # head not visible this long while the driver is still seen -> asleep / collapsed evidence
 HOLD_S = 1.0        # both hands observed away for this long -> confirmed
 CANDIDATE_RESET_S = 0.3   # a hand seen near the wheel this long cancels an unconfirmed candidate
 CLEAR_S = 0.5       # a hand seen near the wheel this long ends a confirmed event
@@ -277,6 +278,9 @@ def main():
     ap.add_argument('--no-sleep-bit', action='store_true',
                     help='do not put the asleep / slumped state into bit 0x80 (it is only logged and drawn)')
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
+    ap.add_argument('--forward-start', action='store_true',
+                    help='assume the driver mostly looks at the road in the first ~4 s: their most frequent head pose '
+                         'becomes the fixed forward baseline (nothing reported for 2 s, no prior, no drift)')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     ap.add_argument('--no-phone', action='store_true', help='do not run phone detection (bit 0x10 stays 0)')
     ap.add_argument('--no-yawn', action='store_true', help='do not run yawn detection (bit 0x08 stays 0)')
@@ -361,7 +365,7 @@ def main():
     bcsv = open(args.flags, 'w') if args.flags else None
     if bcsv:
         bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants,phone,yawn\n')
-    head = eyes_off_road.HeadPoseDetector()
+    head = eyes_off_road.HeadPoseDetector(forward_start=args.forward_start)
     eyes = eyes_closed.EyeClosureDetector()
     slumper = slump.SlumpDetector()
     people = occupancy.OccupancyCounter()
@@ -438,7 +442,7 @@ def main():
             points = dbg['points']
             label = classify(states)
             face = faces.measure(frame, kp) if faces else None
-            obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]))
+            obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]), driver_present=occ.zones['driver'] >= 1)
             hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
             head_bit = head_filter.update(t, head.raw_bit(obs))
             ears = [e for e in ((face.ear_l, face.ear_r) if face else ()) if e is not None]
@@ -446,6 +450,8 @@ def main():
                               float(np.mean(ears)) if ears else None, obs.pitch_delta if obs.source == 'face' else None)
             body = slumper.update(t, kp)
             sleep_bits = [b for b in (eyes.raw_bit(eye), slumper.raw_bit(body)) if b is not None]
+            if obs.state == 'away' and obs.away_s >= AWAY_ASLEEP_S:       # head hidden for long, the eyes cannot be seen
+                sleep_bits.append(1)
             sleep_bit = sleep_filter.update(t, (1 if 1 in sleep_bits else 0) if sleep_bits else None)
             asleep = bool(sleep_bit) and not args.no_sleep_bit
             # PHONE_USE is already confirmed/debounced by phone_events.EventTracker: no FlickerFilter on top.
@@ -521,16 +527,19 @@ def main():
                         for q, on in zip(pts, inside):
                             cv2.circle(view, (int(q[0]), int(q[1])), 6, (0, 220, 0) if on else (0, 0, 255), -1)
                 color = {'near': (0, 200, 0), 'off': (0, 0, 255), 'unknown': (160, 160, 160)}[label]
-                cv2.putText(view, f'{label.upper()}  L:{states[0]}({dbg["sources"][0]}) '
-                                  f'R:{states[1]}({dbg["sources"][1]})  t={t:.2f}s',
+                cv2.putText(view, f't={t:.2f}s  HANDS OFF-DETECTION DISABLED' if args.no_hands else
+                            f'{label.upper()}  L:{states[0]}({dbg["sources"][0]}) '
+                            f'R:{states[1]}({dbg["sources"][1]})  t={t:.2f}s',
                             (30, 80), 0, 2.0, color, 5)
                 if machine.confirmed:
                     cv2.putText(view, CASE, (30, 160), 0, 2.2, (0, 0, 255), 6)
                 head_color = {'turned': (0, 0, 255), 'down': (0, 0, 255), 'up': (0, 0, 255),
-                              'forward': (0, 200, 0), 'unknown': (160, 160, 160)}[obs.state]
+                              'away': (0, 0, 255), 'forward': (0, 200, 0), 'unknown': (160, 160, 160)}[obs.state]
                 unit = ' deg' if obs.source == 'face' else ''
                 if obs.state == 'unknown':
                     head_text = f'HEAD UNKNOWN ({obs.reason})'
+                elif obs.state == 'away':
+                    head_text = 'HEAD NOT VISIBLE (turned away or down)'
                 elif obs.state == 'turned':
                     head_text = f'HEAD TURNED {obs.direction}  yaw {obs.yaw_delta:+.0f}{unit}' if unit else \
                         f'HEAD TURNED {obs.direction}  yaw {obs.yaw_delta:+.2f}'

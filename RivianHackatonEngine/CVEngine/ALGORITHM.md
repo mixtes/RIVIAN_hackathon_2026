@@ -90,6 +90,15 @@ a few helpers from it (`on_wheel`, `HAND_EXT`, `KP_CONF`).
   2. **Warm-up.** The first 4 s only collect data; the bit stays 0.
   3. **Learning.** The baseline is the most frequent head pose over about the last 2 minutes (a histogram mode, so
      glances do not pull it). Samples are weighted by a Gaussian around the prior, and the prior counts as 4 s of data.
+- **`--forward-start` mode (live.py).** For clips that begin with the driver on the road: no prior, no 4 s warm-up,
+  no long learning. Nothing is reported for the first 2 s; the baseline is the most frequent pose of the first 4 s
+  (a mode, so a glance at the camera at the start is tolerated), then it is frozen (no drift).
+  Weakness: a pose held for most of the first 4 s is taken as forward, so a real off-road look right at the start
+  is absorbed.
+- **Head not visible (state `away`, counts as off road).** If the head cannot be measured for 1 s while the driver
+  is still seen (pose keypoints with a weak head, or the occupancy counter sees someone in the driver zone although
+  the pose model gave no driver keypoints), the state is `away` and bit 0x40 is set. It ends on a forward
+  observation, or after 2 s without any sign of the driver. Covers the driver bent down or fully turned away.
 
 ## 6. Output byte and live loop (`cv_flags.py`, `live.py`)
 

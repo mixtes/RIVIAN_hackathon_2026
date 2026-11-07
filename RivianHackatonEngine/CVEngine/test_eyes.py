@@ -46,6 +46,77 @@ class HeadMeasureTests(unittest.TestCase):
         self.assertEqual(eor.head_measure(broken), (None, None, 'low_confidence'))
 
 
+class ForwardStartTests(unittest.TestCase):
+    """forward_start: the most frequent pose of the first seconds is the fixed baseline."""
+
+    def seeded(self, **values):
+        det = eor.HeadPoseDetector(forward_start=True)
+        for i in range(int(eor.FORWARD_LOCK_S * 10) + 1):      # 10 Hz; silent for FORWARD_SEED_S, then provisional
+            obs = det.update(i * 0.1, kp(**values))
+            if i * 0.1 < eor.FORWARD_SEED_S:
+                self.assertEqual(obs.state, 'unknown')
+        return det, eor.FORWARD_LOCK_S + 0.1
+
+    def test_detects_from_the_first_pose_even_far_from_the_prior(self):
+        fwd = eor.PRIOR_YAW + 0.5                              # a forward pose far from the usual prior
+        det, t = self.seeded(yaw=fwd)
+        self.assertEqual(det.update(t, kp(yaw=fwd)).state, 'forward')
+        self.assertEqual(det.update(t + 0.1, kp(yaw=fwd - 0.4)).state, 'turned')
+        self.assertEqual(det.update(t + 0.2, kp(yaw=fwd + 0.4)).direction, 'right')
+
+    def test_baseline_is_frozen_a_long_look_away_is_not_absorbed(self):
+        det, t = self.seeded()
+        for i in range(600):                                   # 60 s turned away
+            obs = det.update(t + i * 0.1, kp(yaw=eor.PRIOR_YAW - 0.5))
+        self.assertEqual(obs.state, 'turned')
+
+    def test_a_glance_at_the_start_does_not_set_the_baseline(self):
+        det = eor.HeadPoseDetector(forward_start=True)
+        for i in range(15):                                    # 1.5 s looking at a passenger
+            det.update(i * 0.1, kp(yaw=eor.PRIOR_YAW + 0.4))
+        for i in range(15, 50):                                # then the road
+            det.update(i * 0.1, kp())
+        self.assertEqual(det.update(5.0, kp()).state, 'forward')
+        self.assertEqual(det.update(5.1, kp(yaw=eor.PRIOR_YAW + 0.4)).state, 'turned')
+
+    def test_default_mode_unchanged(self):
+        self.assertFalse(eor.HeadPoseDetector().forward_start)
+
+
+class LostHeadTests(unittest.TestCase):
+    """A head that cannot be measured while the driver is still seen is 'away' (off road) after LOST_S."""
+
+    def test_unmeasurable_head_becomes_away_after_a_delay(self):
+        det = warmed()
+        t = 6.0
+        self.assertEqual(det.update(t, kp(conf=0.1)).state, 'unknown')
+        self.assertEqual(det.update(t + eor.LOST_S - 0.1, kp(conf=0.1)).state, 'unknown')
+        obs = det.update(t + eor.LOST_S, kp(conf=0.1))
+        self.assertEqual((obs.state, obs.direction), ('away', 'away'))
+        self.assertEqual(eor.HeadPoseDetector.raw_bit(obs), 1)
+        self.assertEqual(det.update(t + 2, kp()).state, 'forward')          # head back: recovers at once
+
+    def test_away_seconds_grow_while_lost(self):
+        det = warmed()
+        obs = [det.update(6.0 + i * 0.1, kp(conf=0.1)) for i in range(45)]
+        self.assertAlmostEqual(obs[-1].away_s, 4.4, delta=0.01)        # lost since t = 6.0, last frame at 10.4
+
+    def test_no_driver_is_never_away(self):
+        det = warmed()
+        for i in range(50):
+            self.assertEqual(det.update(6.0 + i * 0.1, None).state, 'unknown')
+
+    def test_no_keypoints_but_driver_seen_elsewhere_is_away(self):
+        det = warmed()
+        states = [det.update(6.0 + i * 0.1, None, driver_present=True).state for i in range(15)]
+        self.assertEqual((states[0], states[-1]), ('unknown', 'away'))
+
+    def test_not_away_before_any_baseline(self):
+        det = eor.HeadPoseDetector()
+        for i in range(50):
+            self.assertEqual(det.update(i * 0.1, kp(conf=0.1)).state, 'unknown')
+
+
 class HeadPoseDetectorTests(unittest.TestCase):
     """The pose-keypoint source (used when no face is found). Thresholds come from the constants."""
 
