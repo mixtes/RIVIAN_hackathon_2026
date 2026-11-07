@@ -1,5 +1,5 @@
 """LIVE hands-on-wheel monitor. Frames are consumed one at a time; nothing after the current frame is ever used.
-Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--realtime]
+Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--flags flags.csv] [--stream] [--head face|pose] [--realtime]
   SOURCE: a camera index (0, 1, ...) or a video file that is replayed as if it were a live stream.
   --stride N  run the models on every Nth frame only (default 1). Timing always uses source time.
   --realtime  pace a video file at its own fps (a camera is always real time).
@@ -10,11 +10,16 @@ Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--s
 Stages: (1) wheel calibration from the first WARMUP frames fed (WheelCalibrator, prior fallback labelled);
 (2) per frame: driver pose -> hand method -> near / away / unknown per hand -> causal state machine.
 Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (public name).
+  --head        how the head is measured (default face): face = MediaPipe face angles in degrees, pose keypoints
+                as the fallback where no face is found; pose = pose keypoints only (no face model)
+  --flags FILE  the byte sent to the AlertEngine/GameEngine per analyzed frame (cv_flags.py): 0x20 hands off the
+                wheel, 0x40 head turned away or down/up (eyes_off_road.py), lightly smoothed. CSV: frame,time_s,flags,hands_off,eyes_off_road
 """
 import argparse, json, sys, time
 import cv2, numpy as np
 import auto_wheel, rules
 import hands_pose
+import cv_flags, eyes_off_road
 
 CASE = 'HANDS_OFF_THE_WHEEL'
 HOLD_S = 1.0        # both hands observed away for this long -> confirmed
@@ -156,8 +161,16 @@ def main():
     ap.add_argument('--frames', help='CSV with the per-frame hand data (state, wrist and hand points)')
     ap.add_argument('--realtime', action='store_true')
     ap.add_argument('--output', help='simple per-frame CSV: frame,time_s,hands_off,unknown (1 = no hands on the wheel)')
+    ap.add_argument('--flags', help='CSV of the interface byte: frame,time_s,flags,hands_off,eyes_off_road')
+    ap.add_argument('--stream', action='store_true',
+                    help='print one record per analyzed frame to stdout: "timestamp,flags" (flags = the interface byte, '
+                         '0..255); every other message goes to stderr')
+    ap.add_argument('--head', choices=('face', 'pose'), default='face')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     args = ap.parse_args()
+    stream_out = sys.stdout
+    if args.stream:
+        sys.stdout = sys.stderr          # diagnostics must not mix into the record stream
 
     from ultralytics import YOLO
     device = pick_device()
@@ -169,17 +182,27 @@ def main():
     cal.model = auto_wheel.load_model()
     cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
 
+    faces = None
+    if args.head == 'face':
+        import head_face
+        faces = head_face.FaceHead()
     cap, is_cam = open_source(args.source)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     writer = None
     log = open(args.events, 'w') if args.events else None
     fcsv = open(args.frames, 'w') if args.frames else None
     ocsv = open(args.output, 'w') if args.output else None
+    bcsv = open(args.flags, 'w') if args.flags else None
+    if bcsv:
+        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road\n')
+    head = eyes_off_road.HeadPoseDetector()
+    hands_filter, head_filter = cv_flags.FlickerFilter(), cv_flags.FlickerFilter()
     if ocsv:
         ocsv.write('frame,time_s,hands_off,unknown\n')
     if fcsv:
         fcsv.write('frame,time_s,label,left_hand,right_hand,left_wrist_x,left_wrist_y,left_hand_x,left_hand_y,'
-                   'right_wrist_x,right_wrist_y,right_hand_x,right_hand_y,event_active,left_source,right_source\n')
+                   'right_wrist_x,right_wrist_y,right_hand_x,right_hand_y,event_active,left_source,right_source,head_yaw,head_delta,head_pitch,head_pitch_delta,head_state,head_direction,head_reason,'
+                   'baseline_source,head_source,blink,gaze_down\n')
     machine, started = HandsOffMachine(), time.monotonic()
     frame_no = proc = 0
     wheel = margin = hands = None
@@ -215,6 +238,16 @@ def main():
             states, dbg = hands.update(frame, kp)
             points = dbg['points']
             label = classify(states)
+            face = faces.measure(frame, kp) if faces else None
+            obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]))
+            hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
+            head_bit = head_filter.update(t, head.raw_bit(obs))
+            flags = cv_flags.pack_flags(hands_off=bool(hands_bit), off_road=bool(head_bit))
+            if args.stream:
+                try:
+                    print(cv_flags.format_record(t, flags), file=stream_out, flush=True)
+                except BrokenPipeError:      # the reader went away: stop cleanly
+                    break
             for ev in machine.update(t, label):
                 ev['wall_latency_ms'] = round((time.monotonic() - t0) * 1000)
                 print(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
@@ -224,13 +257,23 @@ def main():
                 off, unk = hands_off_flag(label)
                 ocsv.write(f'{frame_no - 1},{t:.3f},{off},{unk}\n')
                 ocsv.flush()
+            if bcsv:
+                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit}\n')
+                bcsv.flush()
             if fcsv:
                 cells = []
                 for p in points:
                     cells += ['', '', '', ''] if p is None else [f'{p[0][0]:.0f}', f'{p[0][1]:.0f}',
                                                                    f'{p[1][0]:.0f}', f'{p[1][1]:.0f}']
                 fcsv.write(f'{frame_no - 1},{t:.3f},{label},{states[0]},{states[1]},'
-                           + ','.join(cells) + f',{int(machine.confirmed)},{dbg["sources"][0]},{dbg["sources"][1]}\n')
+                           + ','.join(cells) + f',{int(machine.confirmed)},{dbg["sources"][0]},{dbg["sources"][1]},'
+                           f'{"" if obs.yaw is None else f"{obs.yaw:.3f}"},'
+                           f'{"" if obs.yaw_delta is None else f"{obs.yaw_delta:.3f}"},'
+                           f'{"" if obs.pitch is None else f"{obs.pitch:.3f}"},'
+                           f'{"" if obs.pitch_delta is None else f"{obs.pitch_delta:.3f}"},'
+                           f'{obs.state},{obs.direction or ""},{obs.reason or ""},{obs.baseline_source},'
+                           f'{obs.source or ""},{"" if obs.blink is None else f"{obs.blink:.3f}"},'
+                           f'{"" if obs.gaze_down is None else f"{obs.gaze_down:.3f}"}\n')
             proc += 1
             lat.append(time.monotonic() - t0)
             if args.show or args.save:
@@ -263,6 +306,30 @@ def main():
                             (30, 80), 0, 2.0, color, 5)
                 if machine.confirmed:
                     cv2.putText(view, CASE, (30, 160), 0, 2.2, (0, 0, 255), 6)
+                head_color = {'turned': (0, 0, 255), 'down': (0, 0, 255), 'up': (0, 0, 255),
+                              'forward': (0, 200, 0), 'unknown': (160, 160, 160)}[obs.state]
+                unit = ' deg' if obs.source == 'face' else ''
+                if obs.state == 'unknown':
+                    head_text = f'HEAD UNKNOWN ({obs.reason})'
+                elif obs.state == 'turned':
+                    head_text = f'HEAD TURNED {obs.direction}  yaw {obs.yaw_delta:+.0f}{unit}' if unit else \
+                        f'HEAD TURNED {obs.direction}  yaw {obs.yaw_delta:+.2f}'
+                elif obs.state in ('down', 'up'):
+                    head_text = f'HEAD {obs.state.upper()}  pitch {obs.pitch_delta:+.0f}{unit}' if unit else \
+                        f'HEAD {obs.state.upper()}  pitch {obs.pitch_delta:+.2f}'
+                elif unit:
+                    head_text = f'HEAD FORWARD  yaw {obs.yaw_delta:+.0f}  pitch {obs.pitch_delta:+.0f}{unit}'
+                else:
+                    head_text = f'HEAD FORWARD  yaw {obs.yaw_delta:+.2f}  pitch {obs.pitch_delta:+.2f}'
+                head_text += f' [{obs.source or "-"}/{obs.baseline_source}]'
+                if obs.blink is not None:
+                    head_text += f'  blink {obs.blink:.2f}'
+                cv2.putText(view, head_text, (30, 240), 0, 1.3, head_color, 4)
+                cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit}',
+                            (30, 320), 0, 1.5, (0, 0, 255) if flags else (200, 200, 200), 4)
+                if kp is not None and obs.yaw is not None:
+                    for k in (eyes_off_road.NOSE, eyes_off_road.LEYE, eyes_off_road.REYE):
+                        cv2.circle(view, (int(kp[k, 0]), int(kp[k, 1])), 9, head_color, -1)
                 if args.save:
                     if writer is None:
                         writer = cv2.VideoWriter(args.save, cv2.VideoWriter_fourcc(*'mp4v'),
@@ -286,6 +353,8 @@ def main():
             fcsv.close()
         if ocsv:
             ocsv.close()
+        if bcsv:
+            bcsv.close()
     if lat:
         mean = float(np.mean(lat))
         print(f'processed {proc} frames; mean {mean * 1000:.0f} ms/frame = {1 / mean:.1f} fps '
