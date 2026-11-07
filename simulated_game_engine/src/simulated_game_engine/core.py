@@ -41,6 +41,7 @@ class Session:
     car_id: str | None
     wall_start: datetime
     mono_start: float
+    app_started_at: datetime | None = None   # the app's own drive start time (session.start)
 
     def wall(self, t: float) -> datetime:
         return to_wall(t, wall_start=self.wall_start, mono_start=self.mono_start)
@@ -84,29 +85,34 @@ class BridgeCore:
                                  if detected_actions else None)
         self.alert_refresh_s = alert_refresh_s
         self.session: Session | None = None
-        # action (lower-case) -> monotonic start, for actions the simulator holds active
+        # action (UPPER_CASE) -> monotonic start, for actions the simulator holds active
         self.active_actions: dict[str, float] = {}
         # engine alert_id -> what the app is showing for it (until the engine clears it)
         self._alerts: dict[str, _AlertState] = {}
         # session_id -> drive.result envelope, kept until drive.result.ack (§8.4 rule 3)
         self.pending_results: OrderedDict[str, p.Message] = OrderedDict()
         self._ended: deque[str] = deque(maxlen=ended_history)
+        # session_id -> its drive.result, also after the ack, for the last `ended_history` drives.
+        # An app restored to a state before the result (emulator snapshot, crash) resumes the
+        # finished drive; re-sending the result lets it close that drive (it de-duplicates).
+        self._results: OrderedDict[str, p.Message] = OrderedDict()
+        self._results_max = ended_history
 
     # ---- introspection -------------------------------------------------------------------
 
     @property
     def configured_actions(self) -> list[str]:
-        """Lower-case action keys the engine knows (AlertEngine and/or GameEngine config)."""
+        """UPPER_CASE action keys the engine knows (AlertEngine and/or GameEngine config)."""
         keys = set(self.system.alerts.config) | set(self.system.game.config)
-        return sorted(k.lower() for k in keys)
+        return sorted(k.strip().upper() for k in keys)
 
     @property
     def supported_actions(self) -> list[str]:
         """hello.supported_actions: the detected subset if the engine declares one."""
-        return self.detected_actions or [a.upper() for a in self.configured_actions]
+        return self.detected_actions or list(self.configured_actions)
 
     def is_configured(self, action: str) -> bool:
-        return action.strip().lower() in self.configured_actions
+        return action.strip().upper() in self.configured_actions
 
     def status(self) -> _Status:
         return _Status(
@@ -183,8 +189,11 @@ class BridgeCore:
         if sid in self.pending_results or sid in self._ended:
             # Never restart a finished drive under the same id (it is the backend drive id).
             out = [self._error(p.SESSION_ENDED, f"session {sid} already ended", env.msg_id)]
-            if sid in self.pending_results:
-                out.append(self.pending_results[sid])
+            result = self.pending_results.get(sid) or self._results.get(sid)
+            if result is not None:
+                log.info("session %s already ended: re-sending its drive.result so the app "
+                         "can close it", sid[:8])
+                out.append(result)
             return out
 
         out = []
@@ -197,6 +206,7 @@ class BridgeCore:
         self.session = Session(
             session_id=sid, user_id=str(start.user_id), display_name=start.display_name,
             car_id=start.car_id, wall_start=self.clock.wall(), mono_start=t,
+            app_started_at=start.started_at,
         )
         self.active_actions.clear()
         self._alerts.clear()
@@ -229,7 +239,7 @@ class BridgeCore:
 
     def set_action(self, action: str, active: bool) -> list[p.Message]:
         """A driver-action event: `active=True` started / still going, `False` ended."""
-        action = action.strip().lower()
+        action = action.strip().upper()
         if self.session is None:
             raise NoActiveSessionError("no active session; ignoring driver event")
         t = self.clock.monotonic()
@@ -238,6 +248,23 @@ class BridgeCore:
         else:
             self.active_actions.pop(action, None)
         return self._apply(self.system.on_event(action, active, t))
+
+    def on_frame(self, flags: int) -> list[p.Message]:
+        """One analyzed CVEngine frame (the state byte, CV_ENGINE_INTERFACE.md).
+
+        Timestamped on arrival with the bridge clock, the same clock as the session and the
+        ticker. Ignored when no drive is active. Needs an engine with SafetySystem.on_frame.
+        """
+        if self.session is None:
+            return []
+        t = self.clock.monotonic()
+        out = self._apply(self.system.on_frame(t, flags))
+        engine_active = set(self.system.alerts.active_actions())
+        for action in [a for a in self.active_actions if a not in engine_active]:
+            self.active_actions.pop(action)
+        for action in engine_active:
+            self.active_actions.setdefault(action, t)
+        return out
 
     def tick(self) -> list[p.Message]:
         """Called every --tick-ms so alerts escalate while an action continues."""
@@ -318,6 +345,9 @@ class BridgeCore:
         )
         msg = self._env(p.DRIVE_RESULT, result)
         self.pending_results[session.session_id] = msg
+        self._results[session.session_id] = msg
+        while len(self._results) > self._results_max:
+            self._results.popitem(last=False)
         self._ended.append(session.session_id)
         self.session = None
         log.info("session %s ended (%s): score %.2f", session.session_id[:8], reason, report.score)

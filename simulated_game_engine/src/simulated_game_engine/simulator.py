@@ -45,17 +45,17 @@ class End:
 Step = Wait | Hold | End
 
 # ~2 minutes. Engine thresholds (RivianHackatonEngine 0.3.0 defaults):
-#   phone_call:    VISUAL at 0 s, AUDIO at 3 s (HAPTIC at 6 s is not reached)
-#   eyes_off_road: AUDIO at 1 s, HAPTIC at 2.5 s, CRITICAL at 4 s
-#   eyes_closed:   CRITICAL at 0.5 s, LATCHED: stays after the eyes open until the driver
+#   PHONE_CALL:    VISUAL at 0 s, AUDIO at 3 s (HAPTIC at 6 s is not reached)
+#   EYES_OFF_ROAD: AUDIO at 1 s, HAPTIC at 2.5 s, CRITICAL at 4 s
+#   EYES_CLOSED:   CRITICAL at 0.5 s, LATCHED: stays after the eyes open until the driver
 #                  presses Dismiss in the app (or the drive ends)
 DEMO_SCENARIO: tuple[Step, ...] = (
     Wait(15.0),
-    Hold("phone_call", 4.5),       # VISUAL -> AUDIO -> clear
+    Hold("PHONE_CALL", 4.5),       # VISUAL -> AUDIO -> clear
     Wait(20.0),
-    Hold("eyes_off_road", 5.0),    # AUDIO -> HAPTIC -> CRITICAL -> clear
+    Hold("EYES_OFF_ROAD", 5.0),    # AUDIO -> HAPTIC -> CRITICAL -> clear
     Wait(15.0),
-    Hold("eyes_closed", 2.0),      # CRITICAL, needs Dismiss (no clear when the eyes open)
+    Hold("EYES_CLOSED", 2.0),      # CRITICAL, needs Dismiss (no clear when the eyes open)
     Wait(58.5),                    # clean stretch
     End(),
 )
@@ -108,7 +108,7 @@ class Simulator:
     async def _hold(self, action: str, seconds: float, session_id: str) -> None:
         await self.set_action(action, True)
         await self.sleep(seconds)
-        if self._same_session(session_id) and action.lower() in self.core.active_actions:
+        if self._same_session(session_id) and action.strip().upper() in self.core.active_actions:
             await self.set_action(action, False)
 
     # ---- auto mode -------------------------------------------------------------------------

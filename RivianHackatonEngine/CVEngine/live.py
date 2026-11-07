@@ -1,5 +1,5 @@
 """LIVE hands-on-wheel monitor. Frames are consumed one at a time; nothing after the current frame is ever used.
-Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--flags flags.csv] [--stream] [--head face|pose] [--realtime]
+Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--flags flags.csv] [--stream] [--play] [--wait] [--head face|pose] [--realtime]
   SOURCE: a camera index (0, 1, ...) or a video file that is replayed as if it were a live stream.
   --stride N  run the models on every Nth frame only (default 1). Timing always uses source time.
   --realtime  play a video file at its own speed, like a camera (a camera is always live). Live sources keep only
@@ -18,8 +18,14 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
                 confirmed: ~1 s to switch on, ~3 s to switch off). CSV: frame,time_s,flags,hands_off,eyes_off_road,phone
   --no-hands    skip hands-off-wheel detection and wheel calibration (bit 0x20 stays 0; faster)
   --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
+  --play        show the plain video (every frame, no overlays) in a window at its real speed; q closes it and stops.
+                A player thread reads and shows the source; the analysis takes the newest frame (at least --stride
+                frames after the previous one) and skips frames it cannot keep up with, so the video never slows down
+  --wait        load the models and calibrate the wheel on the first frames (a video is rewound afterwards), print
+                READY to stderr, then wait for one line on stdin before playing (used by the bridge: the video starts
+                when the car app starts a drive)
 """
-import argparse, json, sys, time
+import argparse, json, sys, threading, time
 import cv2, numpy as np
 import auto_wheel, rules
 import hands_pose
@@ -32,6 +38,7 @@ CLEAR_S = 0.5       # a hand seen near the wheel this long ends a confirmed even
 LOSS_S = 2.0        # no usable observation for this long -> observation lost (event ends, state resets)
 rules_sk = [(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(0,1),(0,2),(1,3),(2,4)]
 POSE_MODEL, POSE_SIZE, DRIVER_ON_RIGHT = 'yolo11m-pose.pt', 640, True
+PLAY_WINDOW, PLAY_MAX_WIDTH = 'DriveScore - driver camera', 1280    # --play
 
 
 def pick_device():
@@ -155,6 +162,91 @@ class HandsOffMachine:
         return []
 
 
+class Player(threading.Thread):
+    """--play: reads the source and shows it at its own speed, independent of the analysis.
+
+    The analysis calls next() and gets the newest frame, so a slow CPU drops analysis frames instead of
+    slowing the video down. A video file is paced at its fps; a camera delivers frames in real time.
+    """
+
+    def __init__(self, cap, fps, is_cam, started):
+        super().__init__(daemon=True)
+        self.cap, self.fps, self.is_cam, self.started = cap, fps, is_cam, started
+        self.cond = threading.Condition()
+        self.latest = None               # (index, t, frame) of the newest frame read
+        self.done = False
+        self.read = self.drawn = self.late = 0
+        self.max_draw_gap = 0.0          # longest time the window showed the same frame (s)
+
+    def run(self):
+        n = 0
+        last_draw = time.monotonic()
+        cv2.namedWindow(PLAY_WINDOW, cv2.WINDOW_AUTOSIZE)
+        if hasattr(cv2, 'WND_PROP_TOPMOST'):  # keep it above the emulator / terminals (Windows)
+            cv2.setWindowProperty(PLAY_WINDOW, cv2.WND_PROP_TOPMOST, 1)
+        try:
+            while not self.done:
+                ok, frame = self.cap.read()
+                if not ok:
+                    break
+                t = (time.monotonic() - self.started) if self.is_cam else n / self.fps
+                late = False
+                if not self.is_cam:
+                    delay = self.started + t - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                    late = delay < -0.25         # behind schedule: skip drawing to catch up
+                with self.cond:
+                    self.latest = (n, t, frame)
+                    self.cond.notify_all()
+                n += 1
+                self.read += 1
+                if late:
+                    self.late += 1
+                else:
+                    now = time.monotonic()
+                    self.max_draw_gap = max(self.max_draw_gap, now - last_draw)
+                    last_draw = now
+                    self.drawn += 1
+                    scale = min(1.0, PLAY_MAX_WIDTH / frame.shape[1])
+                    cv2.imshow(PLAY_WINDOW, cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1 else frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+        finally:
+            with self.cond:
+                self.done = True
+                self.cond.notify_all()
+            cv2.destroyAllWindows()
+
+    def next(self, after, min_gap):
+        """The newest frame whose index is >= after + min_gap, or None once the source has ended."""
+        with self.cond:
+            while not self.done and (self.latest is None or self.latest[0] < after + min_gap):
+                self.cond.wait(0.5)
+            if self.done:
+                return None
+            return self.latest
+
+    def stop(self):
+        with self.cond:
+            self.done = True
+            self.cond.notify_all()
+
+
+def precalibrate(cap, cal, stride, is_cam):
+    """--wait: lock the wheel on the first frames before the drive starts, then rewind a video."""
+    n = 0
+    while cal.status == 'collecting':
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if n % stride == 0:
+            cal.add_frame(frame)
+        n += 1
+    if not is_cam:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+
 def open_source(source):
     cam = source.isdigit()
     cap = cv2.VideoCapture(int(source) if cam else source)
@@ -189,6 +281,9 @@ def main():
     ap.add_argument('--dark-phone-model', default=None,
                     help='fine-tuned phone model for dark frames (default: phone_dataset/runs/phone_ft/weights/'
                          'best.pt if present)')
+    ap.add_argument('--play', action='store_true', help='plain video window at real speed, no overlays')
+    ap.add_argument('--wait', action='store_true',
+                    help='load models and calibrate, print READY to stderr, wait for a stdin line before playing')
     args = ap.parse_args()
     stream_out = sys.stdout
     if args.stream:
@@ -219,6 +314,18 @@ def main():
                              device=device)
         print(f'phone detection on (dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
     cap, is_cam = open_source(args.source)
+    if args.wait:
+        if cal is not None:
+            cal_started = time.monotonic()
+            precalibrate(cap, cal, args.stride, is_cam)
+            if cal.status == 'failed':
+                sys.exit(f'Wheel calibration failed: {cal.error}')
+            if cal.status == 'locked':
+                print(f'wheel LOCKED before the drive: source={cal.info["source"]} method={args.method} '
+                      f'(calibration took {time.monotonic() - cal_started:.1f}s)', flush=True)
+        print('READY', file=sys.stderr, flush=True)
+        if not sys.stdin.readline():         # EOF: whoever started us went away
+            return
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     writer = None
     log = open(args.events, 'w') if args.events else None
@@ -243,24 +350,37 @@ def main():
     frame_no = proc = 0
     wheel = margin = None
     hands = NoHands() if args.no_hands else None
+    if cal is not None and cal.status == 'locked':     # calibrated during --wait
+        wheel, margin = cal.polygon, cal.margin
+        hands = make_hands(args.method, wheel, margin)
+    player = Player(cap, fps, is_cam, started) if args.play else None
+    if player:
+        player.start()
+    last_idx = -args.stride
     lat = []
     t = 0.0
     reader, last_index = None, None
-    if args.realtime or is_cam:
-        # Live: a reader thread keeps only the newest frame, so a slow frame never builds a backlog
-        # (otherwise the output falls further and further behind real time).
+    if not player and (args.realtime or is_cam):
+        # Live without --play: a reader thread keeps only the newest frame, so a slow frame never builds a
+        # backlog (otherwise the output falls further and further behind real time).
         from live_phone import LatestFrame
         cap.release()
         reader = LatestFrame(args.source, realtime=True, stride=args.stride).start()
     try:
         while True:
-            if reader is not None:
+            if player:
+                newest = player.next(last_idx, args.stride)
+                if newest is None:
+                    break
+                last_idx, t, frame = newest
+                frame_no = last_idx + 1
+            elif reader is not None:
                 item = reader.get(last_index)
                 if item is None:
                     break
                 last_index, t, frame = item
                 frame_no = last_index + 1
-            else:
+            else:                                # offline file: every --stride-th frame, as fast as possible
                 ok, frame = cap.read()
                 if not ok:
                     break
@@ -452,6 +572,11 @@ def main():
     finally:
         if reader is not None:
             reader.stop()
+        if player:
+            player.stop()
+            player.join(timeout=2)
+            print(f'player: read {player.read} frames, drawn {player.drawn}, skipped {player.late} (late); '
+                  f'longest freeze {player.max_draw_gap:.2f}s', flush=True)
         for ev in machine.finish(t):
             print(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
             if log:
