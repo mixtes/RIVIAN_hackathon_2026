@@ -115,6 +115,15 @@ class EvidenceTests(unittest.TestCase):
         e = pe.PhoneEvidence()
         self.assertEqual(e.update(0, kp(RWR=(1200, 1250)), [phone(1700, 1450)]).state, pe.NEGATIVE)
 
+    def test_big_phone_held_flat_counts_by_its_near_edge(self):
+        e = pe.PhoneEvidence()
+        states = []
+        for t in range(10):
+            x = 1100 + 15 * t                                                      # moving with the hand
+            big = (x, 1300, x + 240, 1390, 0.9)                                    # 0.8 sw wide, held at its end
+            states.append(e.update(t * 0.33, kp(RWR=(x - 60, 1340)), [big]).state)  # center 0.6 sw, edge 0.2 sw
+        self.assertEqual(states[-1], pe.POSITIVE)
+
 
 class CabinMotionTests(unittest.TestCase):
     def test_recovers_image_shift(self):
