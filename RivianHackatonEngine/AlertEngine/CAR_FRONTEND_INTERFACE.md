@@ -176,7 +176,7 @@ class AlertEngine:
 |---|---|
 | `drowsiness` LATCHED, rings until dismissed | `EYES_CLOSED` with `latched=True`, e.g. one step `0.5 s → CRITICAL "Wake up! Pull over and rest."` |
 | `drowsiness` has priority over hands | Nothing to do: the app shows CRITICAL above everything else |
-| `hands_off_wheel` TIMED: 3 s on, 1 s pause, repeat | Express it as escalation instead: e.g. `1 s VISUAL → 3 s AUDIO → 6 s HAPTIC → 10 s CRITICAL`. The app repeats the CRITICAL tone every 2 s by itself |
+| `HANDS_OFF_WHEEL` TIMED: 3 s on, 1 s pause, repeat | Express it as escalation instead: e.g. `1 s VISUAL → 3 s AUDIO → 6 s HAPTIC → 10 s CRITICAL`. The app repeats the CRITICAL tone every 2 s by itself |
 | `ALARM_START` | `Alert` |
 | `ALARM_END` (`timeout` / `dismissed` / `preempted`) | `AlertClear` (`ended` / `dismissed`). There's no `timeout` or `preempted` any more |
 | `DISMISS {alarm_id}` | `dismiss(alert_id, ts)` (the bridge calls it when the app sends `alert.dismiss`) |

@@ -6,7 +6,10 @@ real-time output. It records every dangerous action (how many times it
 happened and how long it lasted) and, when the drive ends, returns a
 DriveReport with a safety score.
 
-Input  (per event): event_id, action name, is_active (True/False) timestamp in seconds or frames.
+Input  (per event): action name, is_active (True/False), timestamp in seconds.
+                    CVEngine's per-frame state byte is turned into these events
+                    by SafetySystem.on_frame() in main.py (CV_ENGINE_INTERFACE.md).
+                    run_from_csv() replays an event CSV (event_id, action, is_active, timestamp).
 Output (end of drive): DriveReport with score and per-action breakdown.
 
 Usage:
@@ -50,7 +53,13 @@ def normalize_action(action: str) -> str:
 
 
 def load_events_from_csv(path: str) -> List[dict]:
-    """Read events from a CSV with columns: event_id, action, is_active, timestamp."""
+    """Read events from a CSV with columns: event_id, action, is_active, timestamp.
+
+    event_id is a group id: the is_active=True row that starts one occurrence
+    of an action and the is_active=False row that ends it share the same
+    event_id, so overlapping actions (e.g. a phone call during an
+    eyes-off-road glance) can still be matched start-to-end by id.
+    """
     events = []
     with open(path, newline="") as f:
         for row in csv.DictReader(f):

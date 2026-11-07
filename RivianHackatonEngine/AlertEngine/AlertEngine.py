@@ -29,6 +29,10 @@ Usage:
     engine.tick_all(3.0)                             # -> [Alert(AUDIO)]
     engine.process_event("PHONE_CALL", False, 5.0)   # -> [AlertClear("ended")]
 
+CVEngine input: CVEngine sends one byte of state flags per analyzed frame, not
+events. SafetySystem.on_frame() in main.py turns bit changes into the
+process_event() calls above, for both engines (AlertEngine/CV_ENGINE_INTERFACE.md).
+
 Run `python AlertEngine.py` for an offline demo with a simulated clock.
 """
 
@@ -148,7 +152,7 @@ DEFAULT_ALERT_CONFIG: Dict[str, ActionAlertConfig] = {
     "EYES_CLOSED": ActionAlertConfig(latched=True, steps=[
         EscalationStep(0.5, AlertLevel.CRITICAL, "Wake up! Pull over and rest."),
     ]),
-    "EYES_OFF_ROAD": ActionAlertConfig(steps=[  # STUB: not detected yet
+    "EYES_OFF_ROAD": ActionAlertConfig(steps=[  # CVEngine bit 0x40
         EscalationStep(1.0, AlertLevel.AUDIO, "Eyes on the road."),
         EscalationStep(2.5, AlertLevel.HAPTIC, "Look at the road!"),
         EscalationStep(4.0, AlertLevel.CRITICAL, "Danger! Eyes off the road!"),
@@ -298,7 +302,7 @@ class AlertEngine:
 def _demo() -> None:
     engine = AlertEngine()
     script = [  # (timestamp, kind, action, is_active)
-        (0.0, "det", "hands_off_wheel", True),
+        (0.0, "det", "HANDS_OFF_WHEEL", True),
         (4.0, "det", "PHONE_CALL", True),
         (7.0, "det", "HANDS_OFF_WHEEL", False),
         (8.0, "det", "PHONE_CALL", False),
