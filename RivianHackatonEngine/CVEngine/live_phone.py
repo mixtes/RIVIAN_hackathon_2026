@@ -147,6 +147,11 @@ class LatestFrame:
         self.cap.release()
 
 
+def record_codec(path):
+    """VP8 for .webm (plays in VS Code and browsers), mp4v otherwise."""
+    return 'VP80' if path.lower().endswith('.webm') else 'mp4v'
+
+
 def load_safety_system():
     """SafetySystem from RivianHackatonEngine/main.py (the parent folder of CVEngine)."""
     engine_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -180,7 +185,8 @@ def main():
     parser.add_argument('--dark-conf', type=float, default=DARK_CONF,
                         help='confidence threshold for the dark-frame detector')
     parser.add_argument('--record', default=None,
-                        help='save each processed frame with its detections to this .mp4 file')
+                        help='save each processed frame with its detections; .webm (VP8) plays in VS Code, '
+                             '.mp4 (mp4v) needs an external player such as VLC')
     parser.add_argument('--no-hands', action='store_true',
                         help='skip hand landmarks; a still phone while looking down is then never confirmed')
     args = parser.parse_args()
@@ -297,7 +303,7 @@ def main():
                 view = cv2.resize(view, (960, int(960 * h / w)))
                 if recorder is not None:
                     if not recorder.isOpened():
-                        recorder.open(args.record, cv2.VideoWriter_fourcc(*'mp4v'), RECORD_FPS,
+                        recorder.open(args.record, cv2.VideoWriter_fourcc(*record_codec(args.record)), RECORD_FPS,
                                       view.shape[1::-1])
                         if not recorder.isOpened():
                             raise OSError(f'Cannot write recording: {args.record}')
