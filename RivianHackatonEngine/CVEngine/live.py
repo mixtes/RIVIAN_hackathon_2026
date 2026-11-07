@@ -19,7 +19,7 @@ import argparse, json, sys, time
 import cv2, numpy as np
 import auto_wheel, rules
 import hands_pose
-import cv_flags, eyes_off_road
+import cv_flags, eyes_off_road, eyes_closed, occupancy, slump
 
 CASE = 'HANDS_OFF_THE_WHEEL'
 HOLD_S = 1.0        # both hands observed away for this long -> confirmed
@@ -163,8 +163,11 @@ def main():
     ap.add_argument('--output', help='simple per-frame CSV: frame,time_s,hands_off,unknown (1 = no hands on the wheel)')
     ap.add_argument('--flags', help='CSV of the interface byte: frame,time_s,flags,hands_off,eyes_off_road')
     ap.add_argument('--stream', action='store_true',
-                    help='print one record per analyzed frame to stdout: "timestamp,flags" (flags = the interface byte, '
-                         '0..255); every other message goes to stderr')
+                    help='print one record per analyzed frame to stdout: "timestamp,flags,occupants" (flags = the '
+                         'interface byte 0..255, occupants = people in the car); every other message goes to stderr')
+    ap.add_argument('--eyes-bit', action='store_true', help='kept for compatibility: the 0x80 bit is now on by default')
+    ap.add_argument('--no-sleep-bit', action='store_true',
+                    help='do not put the asleep / slumped state into bit 0x80 (it is only logged and drawn)')
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     args = ap.parse_args()
@@ -194,15 +197,19 @@ def main():
     ocsv = open(args.output, 'w') if args.output else None
     bcsv = open(args.flags, 'w') if args.flags else None
     if bcsv:
-        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road\n')
+        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants\n')
     head = eyes_off_road.HeadPoseDetector()
-    hands_filter, head_filter = cv_flags.FlickerFilter(), cv_flags.FlickerFilter()
+    eyes = eyes_closed.EyeClosureDetector()
+    slumper = slump.SlumpDetector()
+    people = occupancy.OccupancyCounter()
+    hands_filter, head_filter, sleep_filter = cv_flags.FlickerFilter(), cv_flags.FlickerFilter(), cv_flags.FlickerFilter()
     if ocsv:
         ocsv.write('frame,time_s,hands_off,unknown\n')
     if fcsv:
         fcsv.write('frame,time_s,label,left_hand,right_hand,left_wrist_x,left_wrist_y,left_hand_x,left_hand_y,'
                    'right_wrist_x,right_wrist_y,right_hand_x,right_hand_y,event_active,left_source,right_source,head_yaw,head_delta,head_pitch,head_pitch_delta,head_state,head_direction,head_reason,'
-                   'baseline_source,head_source,blink,gaze_down\n')
+                   'baseline_source,head_source,blink,gaze_down,eye_state,eye_score,eye_ref,eye_closed_s,eye_onset_s,ear,perclos,microsleeps,drowsy,slump_state,slump_ratio,slumped_s,'
+                   'occupants,occ_driver,occ_front,occ_rear,occ_raw\n')
     machine, started = HandsOffMachine(), time.monotonic()
     frame_no = proc = 0
     wheel = margin = hands = None
@@ -235,6 +242,11 @@ def main():
                 sys.exit(f'Wheel calibration failed: {cal.error}')
             result = pose.predict(frame, imgsz=POSE_SIZE, conf=0.25, verbose=False, device=device)[0]
             kp = driver_keypoints(result, frame.shape[1]) if result.keypoints is not None else None
+            if result.keypoints is not None:
+                occ = people.update(t, result.boxes.xyxy.cpu().numpy(), result.boxes.conf.cpu().numpy(),
+                                    result.keypoints.data.cpu().numpy(), (frame.shape[1], frame.shape[0]))
+            else:
+                occ = people.update(t, [], [], [], (frame.shape[1], frame.shape[0]))
             states, dbg = hands.update(frame, kp)
             points = dbg['points']
             label = classify(states)
@@ -242,10 +254,18 @@ def main():
             obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]))
             hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
             head_bit = head_filter.update(t, head.raw_bit(obs))
-            flags = cv_flags.pack_flags(hands_off=bool(hands_bit), off_road=bool(head_bit))
+            ears = [e for e in ((face.ear_l, face.ear_r) if face else ()) if e is not None]
+            eye = eyes.update(t, obs.blink if obs.source == 'face' else None, obs.gaze_down or 0.0,
+                              float(np.mean(ears)) if ears else None, obs.pitch_delta if obs.source == 'face' else None)
+            body = slumper.update(t, kp)
+            sleep_bits = [b for b in (eyes.raw_bit(eye), slumper.raw_bit(body)) if b is not None]
+            sleep_bit = sleep_filter.update(t, (1 if 1 in sleep_bits else 0) if sleep_bits else None)
+            asleep = bool(sleep_bit) and not args.no_sleep_bit
+            flags = cv_flags.pack_flags(asleep=asleep,
+                                        hands_off=bool(hands_bit), off_road=bool(head_bit))
             if args.stream:
                 try:
-                    print(cv_flags.format_record(t, flags), file=stream_out, flush=True)
+                    print(cv_flags.format_record(t, flags, occ.count), file=stream_out, flush=True)
                 except BrokenPipeError:      # the reader went away: stop cleanly
                     break
             for ev in machine.update(t, label):
@@ -258,7 +278,7 @@ def main():
                 ocsv.write(f'{frame_no - 1},{t:.3f},{off},{unk}\n')
                 ocsv.flush()
             if bcsv:
-                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit}\n')
+                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit},{occ.count}\n')
                 bcsv.flush()
             if fcsv:
                 cells = []
@@ -273,7 +293,13 @@ def main():
                            f'{"" if obs.pitch_delta is None else f"{obs.pitch_delta:.3f}"},'
                            f'{obs.state},{obs.direction or ""},{obs.reason or ""},{obs.baseline_source},'
                            f'{obs.source or ""},{"" if obs.blink is None else f"{obs.blink:.3f}"},'
-                           f'{"" if obs.gaze_down is None else f"{obs.gaze_down:.3f}"}\n')
+                           f'{"" if obs.gaze_down is None else f"{obs.gaze_down:.3f}"},'
+                           f'{eye.state},{"" if eye.score is None else f"{eye.score:.3f}"},{eye.ref:.3f},'
+                           f'{eye.closed_s:.2f},{"" if eye.onset_s is None else f"{eye.onset_s:.2f}"},'
+                           f'{"" if eye.ear is None else f"{eye.ear:.3f}"},{eye.perclos:.3f},{eye.microsleeps},'
+                           f'{int(eye.drowsy)},{body.state},{"" if body.ratio is None else f"{body.ratio:.3f}"},'
+                           f'{body.slumped_s:.2f},'
+                           f'{occ.count},{occ.zones["driver"]},{occ.zones["front"]},{occ.zones["rear"]},{occ.raw}\n')
             proc += 1
             lat.append(time.monotonic() - t0)
             if args.show or args.save:
@@ -325,8 +351,40 @@ def main():
                 if obs.blink is not None:
                     head_text += f'  blink {obs.blink:.2f}'
                 cv2.putText(view, head_text, (30, 240), 0, 1.3, head_color, 4)
-                cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit}',
+                cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit} '
+                                  f'asleep={int(bool(flags & cv_flags.ASLEEP))}',
                             (30, 320), 0, 1.5, (0, 0, 255) if flags else (200, 200, 200), 4)
+                zone_color = {'driver': (255, 200, 0), 'front': (0, 200, 255), 'rear': (255, 0, 255)}
+                for person in occ.people:
+                    b = [int(v) for v in person.box]
+                    cv2.rectangle(view, (b[0], b[1]), (b[2], b[3]), zone_color[person.zone], 4)
+                    cv2.putText(view, f'{person.zone} {person.conf:.2f}', (b[0] + 8, b[1] + 40), 0, 1.3,
+                                zone_color[person.zone], 3)
+                cv2.putText(view, f'PEOPLE {occ.count}  (driver {occ.zones["driver"]}, front {occ.zones["front"]}, '
+                                  f'rear {occ.zones["rear"]}; this frame {occ.raw})', (30, 500), 0, 1.4, (255, 255, 255), 4)
+                eye_color = {'closed': (0, 0, 255), 'open': (0, 200, 0), 'unknown': (160, 160, 160)}[eye.state]
+                eye_text = f'EYES {eye.state.upper()}'
+                if eye.state == 'closed':
+                    eye_text += f' {eye.closed_s:.1f}s' + ('' if eye.onset_s is None else f' (onset {eye.onset_s:.1f}s)')
+                elif eye.raw_closed:
+                    eye_text += ' (closing, maybe a blink)'
+                if eye.score is not None:
+                    eye_text += f'  score {eye.score:.2f} ref {eye.ref:.2f}'
+                if eye.drowsy:
+                    eye_text += f'  DROWSY (PERCLOS {eye.perclos:.0%}, {eye.microsleeps} long closures)'
+                cv2.putText(view, eye_text, (30, 400), 0, 1.5, eye_color, 4)
+                body_color = {'slumped': (0, 0, 255), 'upright': (0, 200, 0), 'unknown': (160, 160, 160)}[body.state]
+                body_text = f'POSTURE {body.state.upper()}'
+                if body.state == 'slumped':
+                    body_text += f' {body.slumped_s:.1f}s' + (' (driver lost)' if body.held else '')
+                if body.ratio is not None:
+                    body_text += f'  head/shoulder {body.ratio:+.2f} (upright {body.baseline:.2f})'
+                cv2.putText(view, body_text, (30, 580), 0, 1.4, body_color, 4)
+                if eye.score is not None:                       # bar: score vs the closing level
+                    cv2.rectangle(view, (30, 430), (430, 460), (80, 80, 80), 2)
+                    cv2.rectangle(view, (30, 430), (30 + int(400 * min(eye.score, 1.0)), 460), eye_color, -1)
+                    mark = 30 + int(400 * eyes_closed.ENTER)
+                    cv2.line(view, (mark, 425), (mark, 465), (255, 255, 255), 3)
                 if kp is not None and obs.yaw is not None:
                     for k in (eyes_off_road.NOSE, eyes_off_road.LEYE, eyes_off_road.REYE):
                         cv2.circle(view, (int(kp[k, 0]), int(kp[k, 1])), 9, head_color, -1)
