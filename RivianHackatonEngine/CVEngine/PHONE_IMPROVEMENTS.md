@@ -28,7 +28,7 @@ Status (all 116 clips, stride 8): 0 false-alarm clips; real use detected in 11 c
 | D | End early on strong evidence of release (phone seen lying still, hand away) instead of always waiting 3 s | 4 | small, check with replay |
 | E | Merge a new event into the previous one if the gap is < ~5 s (one alert instead of a split) | 4 (allows shorter end gap) | small |
 | F | GameEngine: `PHONE_USE grace_seconds` 1.0 -> 0 (CV already waits ~1 s) | 3 (double delay) | trivial, GameEngine owner |
-| G | Run phone detection every frame but pose/head less often, or on GPU / smaller models | 8 | medium |
+| G | Smaller / faster models (`live.py --pose-model / --phone-model`). Tested on 084339, 092916, 014837: `yolo11s-pose.pt` + `yolo11m.pt` = 4.5 fps (vs 3.5) with the same phone result; a smaller **phone** model breaks detection (084339: phone boxes 19/36 m, 6/36 s, 2/36 n; PHONE_USE missed). Otherwise GPU / NPU | 8 | done (options); GPU open |
 | H | Hand landmark search centered on the phone box (not only the wrist) | 5 | small, measure first |
 | I | Per-vehicle calibration of crop and tray zone at startup | 7 | medium |
 

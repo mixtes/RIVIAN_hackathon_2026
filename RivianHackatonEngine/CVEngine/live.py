@@ -18,6 +18,8 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
                 confirmed: ~1 s to switch on, ~3 s to switch off). CSV: frame,time_s,flags,hands_off,eyes_off_road,phone
   --no-hands    skip hands-off-wheel detection and wheel calibration (bit 0x20 stays 0; faster)
   --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
+  --pose-model / --pose-size, --phone-model / --phone-size   try other (e.g. smaller, faster) YOLO models;
+                the defaults are yolo11m-pose.pt and yolo11m.pt at 640 px
   --no-yawn     skip yawn detection (bit 0x08: mouth opened wide, then covered by a hand; yawn.py; needs --head face)
   --play        show the plain video (every frame, no overlays) in a window at its real speed; q closes it and stops.
                 A player thread reads and shows the source; the analysis takes the newest frame (at least --stride
@@ -280,6 +282,12 @@ def main():
     ap.add_argument('--no-hands', action='store_true',
                     help='do not run hands-off-wheel detection or wheel calibration (bit 0x20 stays 0); faster, and '
                          'other detections start on the first frame')
+    ap.add_argument('--pose-model', default=POSE_MODEL,
+                    help=f'pose model weights (default {POSE_MODEL}; e.g. yolo11s-pose.pt / yolo11n-pose.pt are faster)')
+    ap.add_argument('--pose-size', type=int, default=POSE_SIZE, help=f'pose input size in px (default {POSE_SIZE})')
+    ap.add_argument('--phone-model', default=None,
+                    help='phone detector weights for normal frames (default yolo11m.pt; e.g. yolo11s.pt is faster)')
+    ap.add_argument('--phone-size', type=int, default=None, help='phone detector input size in px (default 640)')
     ap.add_argument('--dark-phone-model', default=None,
                     help='fine-tuned phone model for dark frames (default: phone_dataset/runs/phone_ft/weights/'
                          'best.pt if present)')
@@ -294,9 +302,9 @@ def main():
     from ultralytics import YOLO
     device = pick_device()
     auto_wheel.DEVICE = device
-    pose = YOLO(POSE_MODEL)
+    pose = YOLO(args.pose_model)
     print(f'device={device}; loading models and warming up...', flush=True)
-    pose.predict(np.zeros((640, 640, 3), np.uint8), imgsz=POSE_SIZE, verbose=False, device=device)
+    pose.predict(np.zeros((640, 640, 3), np.uint8), imgsz=args.pose_size, verbose=False, device=device)
     cal = None
     if not args.no_hands:
         cal = auto_wheel.WheelCalibrator(prior_fallback=True)
@@ -311,10 +319,13 @@ def main():
         faces = head_face.FaceHead()
     phone = None
     if not args.no_phone:
-        from live_phone import PhoneMonitor
-        phone = PhoneMonitor(dark_phone_model=args.dark_phone_model or PhoneMonitor.DEFAULT_DARK_MODEL,
-                             device=device)
-        print(f'phone detection on (dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
+        from live_phone import PhoneMonitor, DET_MODEL, DET_SIZE
+        phone = PhoneMonitor(phone_model=args.phone_model or DET_MODEL,
+                             dark_phone_model=args.dark_phone_model or PhoneMonitor.DEFAULT_DARK_MODEL,
+                             device=device, det_size=args.phone_size or DET_SIZE)
+        print(f'phone detection on ({args.phone_model or DET_MODEL} @ {args.phone_size or DET_SIZE}px; '
+              f'dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
+    print(f'pose model {args.pose_model} @ {args.pose_size}px', flush=True)
     yawner = hand_finder = None
     if not args.no_yawn and faces is not None:
         yawner = yawn.YawnDetector()
@@ -415,7 +426,7 @@ def main():
                 continue
             if cal is not None and cal.status == 'failed':
                 sys.exit(f'Wheel calibration failed: {cal.error}')
-            result = pose.predict(frame, imgsz=POSE_SIZE, conf=0.25, verbose=False, device=device)[0]
+            result = pose.predict(frame, imgsz=args.pose_size, conf=0.25, verbose=False, device=device)[0]
             kp = driver_keypoints(result, frame.shape[1]) if result.keypoints is not None else None
             if result.keypoints is not None:
                 occ = people.update(t, result.boxes.xyxy.cpu().numpy(), result.boxes.conf.cpu().numpy(),

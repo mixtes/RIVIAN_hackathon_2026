@@ -163,7 +163,9 @@ class PhoneMonitor:
     DEFAULT_DARK_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                       'phone_dataset', 'runs', 'phone_ft', 'weights', 'best.pt')
 
-    def __init__(self, phone_model=DET_MODEL, dark_phone_model=DEFAULT_DARK_MODEL, hands=True, device=None):
+    def __init__(self, phone_model=DET_MODEL, dark_phone_model=DEFAULT_DARK_MODEL, hands=True, device=None,
+                 det_size=DET_SIZE):
+        self.det_size = det_size
         from ultralytics import YOLO
         from phone_events import CabinMotion, EventTracker, PhoneEvidence
         self.det, self.device = YOLO(phone_model), device
@@ -185,7 +187,7 @@ class PhoneMonitor:
         crop = frame[y0:, x0:]
         dark = self.det_dark is not None and is_dark(crop)
         model, ids, conf = (self.det_dark, self.dark_ids, DARK_CONF) if dark else (self.det, self.ids, PHONE_CONF)
-        d = model(crop, imgsz=DET_SIZE, conf=conf, classes=ids, verbose=False, device=self.device)[0]
+        d = model(crop, imgsz=self.det_size, conf=conf, classes=ids, verbose=False, device=self.device)[0]
         phones = [(b[0] + x0, b[1] + y0, b[2] + x0, b[3] + y0, float(c))
                   for b, c in zip(d.boxes.xyxy.cpu().numpy(), d.boxes.conf.cpu().numpy())][:3]
         hands = (lambda: self.finder.find(frame, kp)) if self.finder is not None and kp is not None else None
