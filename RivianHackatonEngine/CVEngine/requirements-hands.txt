@@ -1,0 +1,9 @@
+# Hand landmarks (MediaPipe). Install WITHOUT dependencies so it uses the tested opencv-python from
+# requirements-tools.txt instead of adding opencv-contrib-python (two OpenCV packages break cv2):
+#   .\venv\Scripts\python.exe -m pip install --no-deps -r requirements-hands.txt
+mediapipe==1.2.0
+absl-py==2.5.1
+flatbuffers==25.12.19
+sounddevice==0.5.6
+cffi==2.1.1
+pycparser==3.12

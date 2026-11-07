@@ -62,7 +62,8 @@ def frame_flags(kp, phones, wheel, margin):
     wr = [kp[i,:2] for i in (LWR, RWR) if ok(i)]
     ears = [kp[i,:2] for i in (LEAR, REAR, NOSE) if ok(i)]
     n_wheel = sum(on_wheel(w, wheel, margin) for w in wr)
-    wrist_ear = any(np.hypot(*(w-e)) < 0.65*sw and not on_wheel(w, wheel, margin) for w in wr for e in ears)
+    # diagnostic only: a hand at the face is not phone evidence (scratching, glasses, yawning)
+    hand_at_face = any(np.hypot(*(w-e)) < 0.65*sw and not on_wheel(w, wheel, margin) for w in wr for e in ears)
     ph = [p for p in phones if not np.isnan(p[0])]
     centers = [((p[0]+p[2])/2, (p[1]+p[3])/2) for p in ph]
     phone_near_head = any(np.hypot(c[0]-e[0], c[1]-e[1]) < 0.8*sw for c in centers for e in ears)
@@ -78,8 +79,9 @@ def frame_flags(kp, phones, wheel, margin):
     return {
         'HEAD_DOWN_HAND_IN_LAP': bool(lap and pitch > PITCH_MIN),
         'n_hands_on_wheel': n_wheel,
-        'PHONE_AT_EAR': bool(phone_near_head or wrist_ear),
-        'PHONE_IN_HAND': bool(phone_near_wrist and not phone_near_head and not wrist_ear),
+        'hand_at_face': bool(hand_at_face),
+        'PHONE_AT_EAR': bool(phone_near_head),
+        'PHONE_IN_HAND': bool(phone_near_wrist and not phone_near_head),
         'HANDS_OFF_WHEEL': n_wheel == 0 and len(wr) > 0,
         'ONE_HAND_ON_WHEEL': n_wheel == 1,
     }

@@ -232,5 +232,149 @@ class WheelConsensusTests(unittest.TestCase):
         self.assertEqual(auto_wheel.tolerance_outline(polygon, 0, (200, 200)), [])
 
 
+WHEEL_POINTS = np.array([[60, 60], [140, 60], [140, 140], [60, 140]], np.float32)
+
+
+def candidate(confidence=0.5, points=WHEEL_POINTS):
+    x1, y1 = points.min(axis=0)
+    x2, y2 = points.max(axis=0)
+    return confidence, points, [float(x1), float(y1), float(x2), float(y2)]
+
+
+class LiveCalibrationTests(unittest.TestCase):
+    def make(self, results, **settings):
+        calls = []
+        sequence = iter(results)
+
+        def segment(model, frame):
+            calls.append(frame)
+            return next(sequence)
+
+        settings = dict(interval_s=1.0, samples=4, timeout_s=10.0, **settings)
+        calibrator = auto_wheel.LiveWheelCalibrator(None, (200, 200), segment=segment, **settings)
+        return calibrator, calls
+
+    @staticmethod
+    def frame():
+        return np.zeros((200, 200, 3), np.uint8)
+
+    def feed(self, calibrator, until_s, fps=30):
+        for i in range(int(until_s * fps) + 1):
+            if calibrator.add_frame(self.frame(), i / fps) != calibrator.CALIBRATING:
+                break
+
+    def test_locks_from_spaced_samples_using_only_past_frames(self):
+        calibrator, calls = self.make([candidate()] * 10)
+        self.feed(calibrator, 10)
+        self.assertEqual(calibrator.state, calibrator.LOCKED)
+        self.assertEqual(len(calls), 4)
+        self.assertAlmostEqual(calibrator.record['locked_after_s'], 3.0)
+        self.assertAlmostEqual(calibrator.record['window_s'], 3.0)
+        self.assertEqual(calibrator.record['mode'], 'live')
+        wheel = np.array(calibrator.record['wheel'])
+        self.assertTrue(rules.on_wheel((100, 100), wheel, 0))
+        self.assertFalse(rules.on_wheel((20, 20), wheel, 0))
+
+    def test_no_further_inference_after_lock(self):
+        calibrator, calls = self.make([candidate()] * 10)
+        self.feed(calibrator, 10)
+        for t in (20.0, 21.0, 22.0):
+            self.assertEqual(calibrator.add_frame(self.frame(), t), calibrator.LOCKED)
+        self.assertEqual(len(calls), 4)
+
+    def test_sliding_window_recovers_after_early_misses(self):
+        calibrator, calls = self.make([None, None, candidate(), candidate(), candidate(), candidate()])
+        self.feed(calibrator, 10)
+        self.assertEqual(calibrator.state, calibrator.LOCKED)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(calibrator.record['sample_count'], 3)
+
+    def test_low_confidence_fails_at_timeout_without_lowering_threshold(self):
+        calibrator, calls = self.make([candidate(0.1)] * 100)
+        self.feed(calibrator, 20)
+        self.assertEqual(calibrator.state, calibrator.FAILED)
+        self.assertIn('confidence', calibrator.reason)
+        self.assertIsNone(calibrator.record)
+        self.assertEqual(len(calls), 11)
+
+    def test_backwards_timestamp_resets_calibration(self):
+        calibrator, calls = self.make([candidate()] * 10)
+        for t in (100.0, 101.0, 102.0):
+            calibrator.add_frame(self.frame(), t)
+        calibrator.add_frame(self.frame(), 5.0)
+        self.assertEqual(len(calibrator.attempts), 1)
+        self.assertEqual(calibrator.start_s, 5.0)
+        self.assertEqual(calibrator.state, calibrator.CALIBRATING)
+
+    def test_rejects_frames_of_wrong_size(self):
+        calibrator, _ = self.make([candidate()])
+        with self.assertRaisesRegex(ValueError, 'Frame size'):
+            calibrator.add_frame(np.zeros((100, 200, 3), np.uint8), 0.0)
+
+    def test_live_record_loads_in_rules_and_writes_preview(self):
+        calibrator, _ = self.make([candidate()] * 10)
+        self.feed(calibrator, 10)
+        with tempfile.TemporaryDirectory() as directory:
+            target = str(Path(directory) / 'wheel.json')
+            preview = auto_wheel.save_calibration(calibrator.record, calibrator.preview_frame, target)
+            self.assertTrue(Path(preview).is_file())
+            wheel, margin = rules.load_wheel(str(Path(directory) / 'cache.npz'), (200, 200))
+            np.testing.assert_array_equal(wheel, calibrator.record['wheel'])
+            self.assertEqual(margin, calibrator.record['wrist_margin_px'])
+
+    def test_segment_wheel_keeps_best_plausible_mask(self):
+        small = WHEEL_POINTS * 0.5 + 40          # 40x40 box: 4% of a 200x200 frame
+        huge = np.array([[0, 0], [199, 0], [199, 199], [0, 199]], np.float32)
+
+        def box(points, confidence):
+            x1, y1 = points.min(axis=0)
+            x2, y2 = points.max(axis=0)
+            return SimpleNamespace(xyxy=[np.array([x1, y1, x2, y2])], conf=np.float32(confidence))
+
+        model = Mock()
+        model.predict.return_value = [SimpleNamespace(
+            boxes=[box(huge, 0.9), box(small, 0.3), box(small, 0.6)],
+            masks=SimpleNamespace(xy=[huge, small, small]))]
+        confidence, points, _ = auto_wheel.segment_wheel(model, self.frame())
+        self.assertAlmostEqual(confidence, 0.6, places=5)
+        np.testing.assert_array_equal(points, small)
+        model.predict.return_value = [SimpleNamespace(boxes=[box(huge, 0.9)],
+                                                      masks=SimpleNamespace(xy=[huge]))]
+        self.assertIsNone(auto_wheel.segment_wheel(model, self.frame()))
+
+
+class PhoneRuleTests(unittest.TestCase):
+    WHEEL = np.array([[1500, 1100], [1800, 1100], [1800, 1400], [1500, 1400]], np.int32)
+
+    def kp(self, **pts):
+        kp = np.full((17, 3), np.nan, np.float32)
+        kp[rules.LSHO], kp[rules.RSHO] = [1000, 800, .9], [1300, 800, .9]      # shoulder width 300
+        kp[rules.NOSE], kp[rules.LEAR] = [1150, 600, .9], [1080, 590, .9]
+        for name, xy in pts.items():
+            kp[getattr(rules, name)] = [*xy, .9]
+        return kp
+
+    def phones(self, *centers):
+        p = np.full((3, 5), np.nan, np.float32)
+        for i, (x, y) in enumerate(centers):
+            p[i] = [x - 30, y - 50, x + 30, y + 50, .5]
+        return p
+
+    def test_hand_at_face_without_phone_is_not_phone_at_ear(self):
+        f = rules.frame_flags(self.kp(LWR=(1090, 610)), self.phones(), self.WHEEL, 0)
+        self.assertFalse(f['PHONE_AT_EAR'])
+        self.assertTrue(f['hand_at_face'])
+
+    def test_detected_phone_at_ear(self):
+        f = rules.frame_flags(self.kp(LWR=(1090, 640)), self.phones((1085, 610)), self.WHEEL, 0)
+        self.assertTrue(f['PHONE_AT_EAR'])
+        self.assertFalse(f['PHONE_IN_HAND'])
+
+    def test_phone_in_hand_low_even_if_other_hand_touches_face(self):
+        f = rules.frame_flags(self.kp(LWR=(1090, 610), RWR=(1200, 1250)), self.phones((1210, 1260)), self.WHEEL, 0)
+        self.assertTrue(f['PHONE_IN_HAND'])
+        self.assertFalse(f['PHONE_AT_EAR'])
+
+
 if __name__ == '__main__':
     unittest.main()
