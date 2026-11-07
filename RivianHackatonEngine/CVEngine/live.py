@@ -2,7 +2,8 @@
 Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--flags flags.csv] [--stream] [--head face|pose] [--realtime]
   SOURCE: a camera index (0, 1, ...) or a video file that is replayed as if it were a live stream.
   --stride N  run the models on every Nth frame only (default 1). Timing always uses source time.
-  --realtime  pace a video file at its own fps (a camera is always real time).
+  --realtime  play a video file at its own speed, like a camera (a camera is always live). Live sources keep only
+              the newest frame: frames that arrive while the models are busy are dropped, so output never lags.
   --method    how a hand is judged near / away / unknown (default hybrid):
                 hybrid     hands_hybrid.py     MediaPipe landmarks, pose proxy fills the gaps (recommended)
                 pose       hands_pose.py       pose keypoints only (fastest, least accurate)
@@ -244,19 +245,29 @@ def main():
     hands = NoHands() if args.no_hands else None
     lat = []
     t = 0.0
+    reader, last_index = None, None
+    if args.realtime or is_cam:
+        # Live: a reader thread keeps only the newest frame, so a slow frame never builds a backlog
+        # (otherwise the output falls further and further behind real time).
+        from live_phone import LatestFrame
+        cap.release()
+        reader = LatestFrame(args.source, realtime=True, stride=args.stride).start()
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            t = (time.monotonic() - started) if is_cam else frame_no / fps
-            if args.realtime and not is_cam:
-                delay = started + t - time.monotonic()
-                if delay > 0:
-                    time.sleep(delay)
-            frame_no += 1
-            if (frame_no - 1) % args.stride:
-                continue
+            if reader is not None:
+                item = reader.get(last_index)
+                if item is None:
+                    break
+                last_index, t, frame = item
+                frame_no = last_index + 1
+            else:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                t = frame_no / fps
+                frame_no += 1
+                if (frame_no - 1) % args.stride:
+                    continue
             t0 = time.monotonic()
             if cal is not None and cal.status == 'collecting':
                 if cal.add_frame(frame) == 'collecting':
@@ -439,11 +450,14 @@ def main():
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
     finally:
+        if reader is not None:
+            reader.stop()
         for ev in machine.finish(t):
             print(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
             if log:
                 log.write(json.dumps(ev) + '\n')
-        cap.release()
+        if reader is None:
+            cap.release()
         if writer:
             writer.release()
         if log:
@@ -457,7 +471,7 @@ def main():
     if lat:
         mean = float(np.mean(lat))
         print(f'processed {proc} frames; mean {mean * 1000:.0f} ms/frame = {1 / mean:.1f} fps '
-              f'(source {fps:.0f} fps, stride {args.stride}); p95 {np.percentile(lat, 95) * 1000:.0f} ms')
+              f'(source {fps:.0f} fps, stride {args.stride}' + (f', {reader.read_count - proc} frames dropped to stay live' if reader else '') + f'); p95 {np.percentile(lat, 95) * 1000:.0f} ms')
 
 
 if __name__ == '__main__':

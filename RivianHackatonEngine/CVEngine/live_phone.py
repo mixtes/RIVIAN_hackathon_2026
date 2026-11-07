@@ -20,7 +20,8 @@ import cv2, numpy as np
 
 # Keep in sync with extract.py (same models, crop and driver side).
 POSE_MODEL, DET_MODEL = 'yolo11m-pose.pt', 'yolo11m.pt'
-CX0, CY0 = 760, 600
+CX0, CY0 = 760, 600                 # driver-area crop origin for the 1920x1536 cabin camera
+REF_W, REF_H = 1920, 1536
 DRIVER_ON_RIGHT = True
 POSE_SIZE, DET_SIZE = 640, 640
 PHONE_CONF = 0.15
@@ -35,6 +36,12 @@ DARK_CONF = 0.5                     # threshold for the fine-tuned dark-frame mo
 
 def is_dark(crop_img):
     return float(cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY).mean()) < DARK_BRIGHTNESS
+
+
+def crop_origin(frame):
+    """Top-left of the driver-area crop, scaled from (CX0, CY0) on the reference camera to this frame size."""
+    h, w = frame.shape[:2]
+    return int(round(CX0 * w / REF_W)), int(round(CY0 * h / REF_H))
 
 
 def phone_class_ids(model):
@@ -174,11 +181,12 @@ class PhoneMonitor:
         self.last = None                 # (evidence, phones, used_dark_model) of the latest frame
 
     def update(self, t, frame, kp):
-        crop = frame[CY0:, CX0:]
+        x0, y0 = crop_origin(frame)
+        crop = frame[y0:, x0:]
         dark = self.det_dark is not None and is_dark(crop)
         model, ids, conf = (self.det_dark, self.dark_ids, DARK_CONF) if dark else (self.det, self.ids, PHONE_CONF)
         d = model(crop, imgsz=DET_SIZE, conf=conf, classes=ids, verbose=False, device=self.device)[0]
-        phones = [(b[0] + CX0, b[1] + CY0, b[2] + CX0, b[3] + CY0, float(c))
+        phones = [(b[0] + x0, b[1] + y0, b[2] + x0, b[3] + y0, float(c))
                   for b, c in zip(d.boxes.xyxy.cpu().numpy(), d.boxes.conf.cpu().numpy())][:3]
         hands = (lambda: self.finder.find(frame, kp)) if self.finder is not None and kp is not None else None
         ev = self.evidence.update(t, kp, phones, self.cabin.shift(frame), hands)
@@ -316,11 +324,12 @@ def main():
             h, w = frame.shape[:2]
             r = pose(frame, imgsz=POSE_SIZE, conf=0.25, verbose=False)[0]
             kp = select_driver(r.boxes.xyxy.cpu().numpy(), r.keypoints.data.cpu().numpy(), w)
-            crop_img = frame[CY0:, CX0:]
+            x0, y0 = crop_origin(frame)
+            crop_img = frame[y0:, x0:]
             use_dark = det_dark is not None and is_dark(crop_img)
             model, ids, conf = (det_dark, dark_ids, args.dark_conf) if use_dark else (det, phone_ids, PHONE_CONF)
             d = model(crop_img, imgsz=DET_SIZE, conf=conf, classes=ids, verbose=False)[0]
-            phones = [(b[0] + CX0, b[1] + CY0, b[2] + CX0, b[3] + CY0, float(c))
+            phones = [(b[0] + x0, b[1] + y0, b[2] + x0, b[3] + y0, float(c))
                       for b, c in zip(d.boxes.xyxy.cpu().numpy(), d.boxes.conf.cpu().numpy())][:3]
             hands = (lambda: finder.find(frame, kp)) if finder is not None else None
             ev = evidence.update(ts, kp, phones, cabin.shift(frame), hands)

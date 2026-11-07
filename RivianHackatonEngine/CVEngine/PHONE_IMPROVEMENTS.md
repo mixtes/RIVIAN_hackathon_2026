@@ -13,7 +13,7 @@ Status (all 116 clips, stride 8): 0 false-alarm clips; real use detected in 11 c
 | 4 | End after 3 s without positives | Bit stays on up to ~3 s after the phone is put down; 2 s splits use (12 -> 15 alerts) | `END_GAP_S` |
 | 5 | MediaPipe rarely finds the hand that holds a phone (11/36 frames in 084339) | "Fingers on phone" rarely available; fallback is pose geometry (in-palm) | `hands.py` |
 | 6 | Pose wrist only, no fingers; held vs lying phone separated by motion, head pitch and forearm geometry | Still phone with head up = not counted (e.g. 084339 at 20 s) | `PhoneEvidence.update` |
-| 7 | Thresholds tuned on this camera (fixed crop x>=760, y>=600, driver on right, shoulder-width scale) | New camera position needs re-tuning | `live_phone.py`, constants |
+| 7 | Tuned on this camera: driver on the right, driver-area crop and roof-liner shake region at fixed fractions of the frame (scale with resolution; 640x480 tested) | A different camera position/angle needs re-tuning | `live_phone.crop_origin`, `CabinMotion` |
 | 8 | CPU speed: 281 ms/frame with `--no-hands` (3.5 fps), 403 ms with hands | Fewer frames per second = slower confirmation, more gaps | `live.py` |
 | 9 | Short use at the clip/drive end (< ~1 s of evidence) is never confirmed | 021132 last 2 s missed | `EventTracker` |
 | 10 | Validation is clip-level and partly by eye; no event-level ground truth | Delay / miss rates are estimates | - |

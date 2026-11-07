@@ -70,11 +70,17 @@ class CabinMotion:
     """Estimates how far the whole image shifted relative to the first frame (camera shake),
     using phase correlation on a region that is fixed to the car (the roof liner at the top)."""
 
-    def __init__(self, region=(slice(40, 260), slice(500, 1400)), min_response=0.05):
+    def __init__(self, region=None, min_response=0.05):
+        """region: (row slice, col slice); None = the roof-liner area of the 1920x1536 cabin camera,
+        scaled to the actual frame size."""
         self.region, self.min_response, self.ref, self.window = region, min_response, None, None
 
     def shift(self, frame):
-        patch = cv2.cvtColor(frame[self.region], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        region = self.region
+        if region is None:
+            h, w = frame.shape[:2]
+            region = (slice(int(40 * h / 1536), int(260 * h / 1536)), slice(int(500 * w / 1920), int(1400 * w / 1920)))
+        patch = cv2.cvtColor(frame[region], cv2.COLOR_BGR2GRAY).astype(np.float32)
         if self.ref is None or patch.shape != self.ref.shape:
             self.ref = patch
             self.window = cv2.createHanningWindow(patch.shape[::-1], cv2.CV_32F)
