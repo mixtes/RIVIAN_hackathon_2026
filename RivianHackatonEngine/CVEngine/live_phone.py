@@ -32,6 +32,9 @@ DEFAULT_SCALE = 350.0               # shoulder width (px) when shoulders are not
 RECORD_FPS = 4                      # --record plays processed frames at about the live rate
 DARK_BRIGHTNESS = 45                # mean gray level of the driver crop below which a frame counts as dark
 DARK_CONF = 0.5                     # threshold for the fine-tuned dark-frame model (fewer false alarms)
+# phone_events reasons that mean "a phone is seen, but not handled by the driver" (see PhoneMonitor.handling)
+NOT_HANDLED = ('phone not at ear or hand', 'phone near hand but lying still', 'hand not holding the phone',
+               'looking down, phone detection too weak')
 
 
 def is_dark(crop_img):
@@ -194,7 +197,18 @@ class PhoneMonitor:
         ev = self.evidence.update(t, kp, phones, self.cabin.shift(frame), hands)
         self.tracker.update(ev)
         self.last = (ev, phones, dark)
+        if ev.state == 'POSITIVE' or (ev.phone is not None and ev.reason not in NOT_HANDLED):
+            self.last_positive_t = t
         return int(self.tracker.active is not None)
+
+    def handling(self, t, within_s=3.0):
+        """True while PHONE_USE is active or a phone was in / at the driver's hand in the last `within_s` seconds
+        (also before use is confirmed): the driver is handling a phone, so they are awake. A phone lying still next
+        to a resting hand does not count (NOT_HANDLED)."""
+        last = getattr(self, 'last_positive_t', None)
+        if last is not None and t < last:
+            self.last_positive_t = last = None                 # time went back (seek / new clip)
+        return self.tracker.active is not None or (last is not None and t - last <= within_s)
 
     @property
     def active(self):

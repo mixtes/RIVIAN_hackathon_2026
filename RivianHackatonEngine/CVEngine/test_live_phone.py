@@ -148,6 +148,21 @@ class PhoneMonitorTests(unittest.TestCase):
         off = len(bits) - bits[::-1].index(1)
         self.assertGreaterEqual((off - 15) / 3, 2.5)                               # ~3 s tail after use ends
 
+    def test_handling_covers_recent_use_and_resets_on_seek(self):
+        current = [None]
+        mon = self.make(current)
+        frame = np.zeros((1536, 1920, 3), np.uint8)
+        self.assertFalse(mon.handling(0.0))
+        for i in range(9):                                                         # moving phone in the hand
+            x, y = 1050 + 12 * i, 1300 - 6 * i
+            current[0] = phone_at(x, y)
+            mon.update(i / 3, frame, keypoints(RWR=(x, y - 60)))
+        self.assertIsNotNone(mon.last_positive_t)
+        self.assertTrue(mon.handling(8 / 3))
+        self.assertTrue(mon.handling(mon.last_positive_t + 2.9))                   # within 3 s of the last positive
+        mon.handling(0.0)                                                          # time went back: forget
+        self.assertIsNone(mon.last_positive_t)
+
 
 if __name__ == '__main__':
     unittest.main()

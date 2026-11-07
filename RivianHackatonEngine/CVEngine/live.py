@@ -460,17 +460,25 @@ def main():
             obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]), driver_present=occ.zones['driver'] >= 1)
             hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
             head_bit = head_filter.update(t, head.raw_bit(obs))
+            # PHONE_USE is already confirmed/debounced by phone_events.EventTracker: no FlickerFilter on top.
+            phone_bit = phone.update(t, frame, kp) if phone is not None else 0
+            # A driver who is using a phone is awake. Looking down at it lowers the lids (and turns the head, so the
+            # head-down check in eyes_closed cannot apply): while the phone is in use, eyes / posture / hidden head are
+            # treated as not observable instead of 'asleep'.
+            awake_with_phone = phone is not None and phone.handling(t)
             ears = [e for e in ((face.ear_l, face.ear_r) if face else ()) if e is not None]
-            eye = eyes.update(t, obs.blink if obs.source == 'face' else None, obs.gaze_down or 0.0,
-                              float(np.mean(ears)) if ears else None, obs.pitch_delta if obs.source == 'face' else None)
+            if awake_with_phone:
+                eye = eyes.update(t, None, 0.0, None, None)
+            else:
+                eye = eyes.update(t, obs.blink if obs.source == 'face' else None, obs.gaze_down or 0.0,
+                                  float(np.mean(ears)) if ears else None, obs.pitch_delta if obs.source == 'face' else None)
             body = slumper.update(t, kp)
-            sleep_bits = [b for b in (eyes.raw_bit(eye), slumper.raw_bit(body)) if b is not None]
-            if obs.state == 'away' and obs.away_s >= AWAY_ASLEEP_S:       # head hidden for long, the eyes cannot be seen
+            sleep_bits = [] if awake_with_phone else \
+                [b for b in (eyes.raw_bit(eye), slumper.raw_bit(body)) if b is not None]
+            if not awake_with_phone and obs.state == 'away' and obs.away_s >= AWAY_ASLEEP_S:   # head hidden for long
                 sleep_bits.append(1)
             sleep_bit = sleep_filter.update(t, (1 if 1 in sleep_bits else 0) if sleep_bits else None)
             asleep = bool(sleep_bit) and not args.no_sleep_bit
-            # PHONE_USE is already confirmed/debounced by phone_events.EventTracker: no FlickerFilter on top.
-            phone_bit = phone.update(t, frame, kp) if phone is not None else 0
             # Yawn: confirmed by its own sequence (mouth wide open, then a hand covers it); hands only when needed.
             yawn_state = yawner.update(t, face, lambda: yawn.hand_points(hand_finder.find(frame, kp))
                                        if hand_finder is not None and kp is not None else []) if yawner else None
