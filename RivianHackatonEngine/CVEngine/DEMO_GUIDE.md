@@ -2,7 +2,7 @@
 
 This runs our computer-vision pipeline on a cabin video **as if it were a live camera** and shows what it detects,
 frame by frame, in a window. At the end the terminal prints how fast it ran and what was detected.
-No GPU, car app or server is needed: one Python environment and the videos.
+No GPU, car app or server is needed: one Python environment. The demo videos come with the repository.
 
 ---
 
@@ -14,7 +14,7 @@ No GPU, car app or server is needed: one Python environment and the videos.
 | Python | **3.13** (tested). Download from python.org; tick "Add python.exe to PATH" |
 | Disk / internet | about 3 GB for the packages; the first run downloads the AI models (about 150 MB) |
 | GPU | not needed (everything runs on the CPU) |
-| Videos | the hackathon cabin videos, in `RivianHackatonEngine\CVEngine\videos\Hackathon dataset 2026\` |
+| Videos | included in the repository: `RivianHackatonEngine\CVEngine\use_this_videos\` |
 
 ## 2. One-time setup (PowerShell)
 
