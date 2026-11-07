@@ -15,12 +15,12 @@ def _report(engine):
     system = engine.new_system()
     game = system.game
     game.start_drive(1000.0)
-    game.process_event("phone_call", True, 1010.0)
-    game.process_event("phone_call", False, 1018.0)       # 8 s, grace 1: 1.0 * (1+7)^1.5 = 22.63
-    game.process_event("eyes_off_road", True, 1030.0)
-    game.process_event("eyes_off_road", False, 1030.3)    # under 2 s grace: ignored
-    game.process_event("eyes_off_road", True, 1045.0)
-    game.process_event("eyes_off_road", False, 1048.0)    # 3 s, grace 2: 0.6 * (1+1)^1.5 = 1.70
+    game.process_event("PHONE_CALL", True, 1010.0)
+    game.process_event("PHONE_CALL", False, 1018.0)       # 8 s, grace 1: 1.0 * (1+7)^1.5 = 22.63
+    game.process_event("EYES_OFF_ROAD", True, 1030.0)
+    game.process_event("EYES_OFF_ROAD", False, 1030.3)    # under 2 s grace: ignored
+    game.process_event("EYES_OFF_ROAD", True, 1045.0)
+    game.process_event("EYES_OFF_ROAD", False, 1048.0)    # 3 s, grace 2: 0.6 * (1+1)^1.5 = 1.70
     # total 24.32, scaled by 30 s / 120 s drive = 6.08 -> score 100 * 2^(-6.08/30) = 86.89
     return game, game.end_drive(1120.0)
 

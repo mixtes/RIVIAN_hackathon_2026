@@ -8,7 +8,7 @@ It sends hello + session.start, prints alerts as they arrive, dismisses latched 
 (`requires_ack`, e.g. EYES_CLOSED) after --dismiss-after seconds like a driver pressing
 Dismiss, and acks the drive.result (unless --no-ack, to test re-delivery). Pair it with the
 bridge running e.g. `--scenario demo --fast` or drive it from the bridge CLI
-(`start phone_call`, `end`).
+(`start PHONE_CALL`, `end`).
 """
 
 from __future__ import annotations

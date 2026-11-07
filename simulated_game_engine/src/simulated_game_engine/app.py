@@ -13,6 +13,7 @@ import sys
 from . import __version__
 from .clock import SystemClock
 from .core import BridgeCore
+from .cv_source import CvSource, CvStartError, default_cv_python
 from .engine_loader import ENGINE_PATH_ENV, EngineLoadError, default_engine_path, load_engine
 from .server import BridgeServer
 from .simulator import FAST_SPEED, SCENARIOS, Simulator
@@ -50,6 +51,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     speed.add_argument("--fast", action="store_const", dest="speed", const=FAST_SPEED,
                        help=f"same as --speed {FAST_SPEED:g} (action holds stay real-time)")
     ap.add_argument("--seed", type=int, default=None, help="random seed for auto mode")
+    cv = ap.add_argument_group(
+        "real detection (CVEngine)",
+        "Play a video (or a camera) through RivianHackatonEngine/CVEngine/live.py as the driver: "
+        "the video starts when the car app starts a drive, its alerts go to the app, and the "
+        "drive ends when the video ends.")
+    cv.add_argument("--cv", metavar="VIDEO", default=None,
+                    help="video file, or a camera index such as 0")
+    cv.add_argument("--cv-python", default=None,
+                    help="Python with CVEngine's packages (default: <engine>/.venv, else this one)")
+    cv.add_argument("--cv-stride", type=int, default=6,
+                    help="analyze at most every Nth frame (default 6); the video always plays at "
+                         "normal speed and the analysis skips frames it cannot keep up with")
+    cv.add_argument("--cv-light", action="store_true",
+                    help="pose-only hands and head (faster on CPU, no mediapipe needed)")
+    cv.add_argument("--cv-no-phone", action="store_true",
+                    help="skip phone detection (PHONE_USE): about twice as many analyses per second")
+    cv.add_argument("--cv-no-hands", action="store_true",
+                    help="skip hands-off-wheel detection and wheel calibration (faster start-up)")
+    cv.add_argument("--cv-keep-drive", action="store_true",
+                    help="don't end the drive when the video ends (end it in the app)")
+    cv.add_argument("--cv-no-window", action="store_true", help="don't show the video window")
+    cv.add_argument("--cv-play-resumed", action="store_true",
+                    help="also play the video for a drive the app resumes on reconnect (by default "
+                         "only drives started after the bridge started play it)")
     ap.add_argument("-v", "--verbose", action="store_true", help="log full JSON messages")
     return ap.parse_args(argv)
 
@@ -77,6 +102,26 @@ async def run(args: argparse.Namespace) -> int:
         log.info("auto mode on")
     if args.scenario:
         sim.start_scenario(args.scenario, speed=args.speed, every_session=True)
+    cv_source = None
+    if args.cv:
+        extra = ["--stride", str(max(1, args.cv_stride))]
+        if args.cv_light:
+            extra += ["--method", "pose", "--head", "pose"]
+        if args.cv_no_phone:
+            extra.append("--no-phone")
+        if args.cv_no_hands:
+            extra.append("--no-hands")
+        cv_source = CvSource(
+            core, server.dispatch, source=args.cv, cv_dir=engine.path / "CVEngine",
+            python=args.cv_python or default_cv_python(engine.path), extra_args=extra,
+            end_drive_when_done=not args.cv_keep_drive, play=not args.cv_no_window,
+            play_resumed=args.cv_play_resumed)
+        try:
+            cv_source.start()
+        except CvStartError as exc:
+            log.error("%s", exc)
+            await server.close()
+            return 2
 
     interactive = not args.no_cli and sys.stdin.isatty()
     try:
@@ -92,6 +137,8 @@ async def run(args: argparse.Namespace) -> int:
                     loop.add_signal_handler(sig, stop.set)
             await stop.wait()
     finally:
+        if cv_source is not None:
+            await cv_source.close()
         await sim.close()
         await server.close()
         if core.pending_results:

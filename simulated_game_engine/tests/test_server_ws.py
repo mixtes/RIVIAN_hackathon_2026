@@ -70,7 +70,7 @@ async def test_full_round_trip(bridge: BridgeServer) -> None:
         assert (await recv(ws))["type"] == p.SESSION_ACK
 
         # driver event -> alert, escalation via the ticker, then clear
-        await bridge.dispatch(bridge.core.set_action("eyes_off_road", True))
+        await bridge.dispatch(bridge.core.set_action("EYES_OFF_ROAD", True))
         alerts = []
         async with asyncio.timeout(6):
             while len(alerts) < 3:
@@ -79,7 +79,7 @@ async def test_full_round_trip(bridge: BridgeServer) -> None:
                 alerts.append(m["payload"])
         assert [a["level"] for a in alerts] == ["AUDIO", "HAPTIC", "CRITICAL"]
         assert len({a["alert_id"] for a in alerts}) == 1
-        await bridge.dispatch(bridge.core.set_action("eyes_off_road", False))
+        await bridge.dispatch(bridge.core.set_action("EYES_OFF_ROAD", False))
         clear = await recv(ws)
         assert clear["type"] == p.ALERT_CLEAR
         assert clear["payload"]["alert_id"] == alerts[0]["alert_id"]
@@ -101,7 +101,7 @@ async def test_reconnect_resumes_session_and_redelivers_unacked_result(bridge) -
         await hello(ws)
         await send(ws, p.SESSION_START, session_id=sid, user_id=uid)
         assert (await recv(ws))["type"] == p.SESSION_ACK
-        await bridge.dispatch(bridge.core.set_action("phone_call", True))
+        await bridge.dispatch(bridge.core.set_action("PHONE_CALL", True))
         first = await recv(ws)
         assert first["payload"]["level"] == "VISUAL"
     # connection lost mid-drive
@@ -169,7 +169,7 @@ async def test_bad_message_gets_error_and_connection_survives(bridge) -> None:
 async def test_alerts_without_client_are_dropped_results_are_kept(bridge) -> None:
     sid = str(uuid.uuid4())
     bridge.core.handle(inbound(p.SESSION_START, session_id=sid, user_id=str(uuid.uuid4())))
-    await bridge.dispatch(bridge.core.set_action("phone_call", True))   # nobody listening
+    await bridge.dispatch(bridge.core.set_action("PHONE_CALL", True))   # nobody listening
     await bridge.dispatch(bridge.core.end_session())
     async with connect(url(bridge)) as ws:
         await hello(ws)

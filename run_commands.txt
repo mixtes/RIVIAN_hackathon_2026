@@ -1,0 +1,98 @@
+DriveScore - live CV test with the car app (Windows, PowerShell)
+=================================================================
+
+Video plays in a window, CVEngine detects dangerous actions, alerts show up in the car app.
+Open three PowerShell windows and run one block in each, in this order.
+
+
+TERMINAL 1 = BACKEND  (http://localhost:8000)
+---------------------------------------------
+cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\backend
+.\.venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+
+TERMINAL 2 = CVENGINE  (bridge + video; wait for "CV: ready. Start a drive in the car app", ~15 s)
+--------------------------------------------------------------------------------------------------
+cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\RivianHackatonEngine
+.\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\05_23_62_012006_video_inCabin-good.mp4
+
+  Other video: replace the file name (all videos are in RivianHackatonEngine\CVEngine\videos).
+  The video always plays at normal speed; the analysis takes the newest frame it can keep up with
+  (on this laptop ~1 frame/s, ~1 s behind the picture, with phone / eyes-closed / slump detection on).
+  --cv-light: pose-only hands and head (~1.3 frames/s, less accurate; not worth it on this laptop)
+  --cv-no-phone: skip phone detection (no PHONE_USE alerts) -> ~2.4 frames/s, ~0.4 s behind.
+                 Use it for videos without a phone: detection reacts sooner and catches short moments.
+  --cv-no-hands: skip hands-off-wheel detection and wheel calibration
+  --cv-stride N:  analyze at most every Nth frame (default 6 = at most 5 per second at 30 fps).
+                  Lower values only help on a faster machine; higher values save CPU.
+  Keep the drive after video:   add  --cv-keep-drive
+  Webcam instead of a video:    --cv 0
+
+  The bridge has its own prompt "bridge>". It only takes bridge commands, not PowerShell ones:
+    status   what is connected, active drive, alerts
+    end      end the current drive (the app gets the score)
+    quit     stop the bridge and return to PowerShell   (Ctrl+C does NOT stop it)
+
+
+CHANGE THE VIDEO (only terminal 2 = CVEngine)
+---------------------------------------------
+bridge> end        (only if a drive is still running)
+bridge> quit
+.\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\OTHER_VIDEO.mp4
+  (the prompt must end with \RivianHackatonEngine> ; press the Up arrow to get the last command back)
+Then wait for "CV: ready" and unlock in the app. Backend and emulator keep running.
+List the videos:  dir CVEngine\videos\*.mp4
+
+
+TERMINAL 3 = APP  (car emulator + app)
+--------------------------------------
+$sdk = "$env:LOCALAPPDATA\Android\Sdk"
+Start-Process "$sdk\emulator\emulator.exe" -ArgumentList "-avd", "Automotive_Large_Portrait", "-no-snapshot-load"
+  (-no-snapshot-load = cold boot: the app never comes back frozen in an old drive; takes a bit longer)
+
+  (wait until the car home screen is shown, then:)
+
+cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\car_frontend
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+.\gradlew.bat :app:installDebug
+  (installDebug is only needed the first time and after app code changes)
+
+& "$sdk\platform-tools\adb.exe" shell am start -n com.hackathon.drivescore/.app.MainActivity
+  (opens the app on the emulator; you can also tap the DriveScore icon in the car launcher instead)
+
+
+IN THE APP
+----------
+1. Sign in: demo / demo-password-123, then choose a PIN (first time only).
+2. Unlock with the PIN -> the drive starts and the video window opens.
+3. ~8 s into the "-good" video: EYES_OFF_ROAD alert escalates AUDIO -> HAPTIC -> CRITICAL, then clears.
+4. Video ends -> the drive ends and the app shows the score. Unlock again for the next drive.
+
+The video only plays for a drive you start AFTER the bridge started. If the app still has an
+unfinished drive (emulator snapshot, or a drive that was never ended), it resumes it when it
+reconnects; the bridge then prints "CV: drive ... was started before the bridge" and does NOT
+play the video. End that drive in the app (or type  end  at the bridge> prompt), then unlock
+again to start a new drive with the video.
+(To play the video for a resumed drive anyway, add  --cv-play-resumed)
+
+Terminal 2 (CVEngine) logs every detection ("CV: HANDS_OFF_WHEEL detected") and every alert sent to the app
+("-> alert ..."). Use it to tell a detection problem from an app problem.
+
+
+STOP
+----
+Terminal 2 (CVEngine): type  end  (if a drive is running), then  quit
+Terminal 1 (backend):  Ctrl+C
+Close the emulator window.
+(PostgreSQL runs as a Windows service, nothing to stop.)
+
+
+QUICK CHECKS WITHOUT THE APP
+----------------------------
+cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\RivianHackatonEngine
+python -m unittest discover tests                      # engine tests
+python main.py --cv tests\cv_flags_sample.csv          # replay sample CV output
+.\.venv\Scripts\python live_test.py CVEngine\videos\05_23_62_012006_video_inCabin-good.mp4 --stride 6
+                                                       # video + alerts in the terminal (no app)
+
+Local database: user postgres / matamicaduda29, app database drive / drive.

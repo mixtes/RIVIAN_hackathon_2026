@@ -30,16 +30,16 @@ def console(core, clock):
 async def test_commands(console, core, capsys) -> None:
     con, ft = console
     with pytest.raises(NoActiveSessionError):
-        await con.execute("start phone_call")
+        await con.execute("start PHONE_CALL")
     core.handle(start_msg())
     await con.execute("start PHONE_CALL")
     await con.execute("status")
     out = capsys.readouterr().out
-    assert "active:      phone_call" in out
-    assert "configured:  eating_drinking, eyes_closed, eyes_off_road" in out
-    await con.execute("stop phone_call")
-    await con.execute("start sneezing")
-    assert "does not configure 'sneezing'" in capsys.readouterr().out
+    assert "active:      PHONE_CALL" in out
+    assert "configured:  EATING_DRINKING, EYES_CLOSED, EYES_OFF_ROAD" in out
+    await con.execute("stop PHONE_CALL")
+    await con.execute("start SNEEZING")
+    assert "does not configure 'SNEEZING'" in capsys.readouterr().out
     await con.execute("end")
     assert [m["type"] for m in ft.sent] == [p.ALERT, p.ALERT_CLEAR, p.DRIVE_RESULT]
     await con.execute("drop")
@@ -49,7 +49,7 @@ async def test_commands(console, core, capsys) -> None:
 
 async def test_bad_commands(console) -> None:
     con, _ = console
-    for line in ("bogus", "pulse phone_call", "auto maybe", "scenario nope"):
+    for line in ("bogus", "pulse PHONE_CALL", "auto maybe", "scenario nope"):
         with pytest.raises(ValueError):
             await con.execute(line)
 
@@ -57,12 +57,12 @@ async def test_bad_commands(console) -> None:
 async def test_end_with_an_action_does_not_end_the_drive(console, core) -> None:
     con, ft = console
     core.handle(start_msg())
-    await con.execute("start eyes_off_road")
-    with pytest.raises(ValueError, match="stop eyes_off_road"):
-        await con.execute("end eyes_off_road")
+    await con.execute("start EYES_OFF_ROAD")
+    with pytest.raises(ValueError, match="stop EYES_OFF_ROAD"):
+        await con.execute("end EYES_OFF_ROAD")
     with pytest.raises(ValueError, match="takes no arguments"):
         await con.execute("status now")
-    assert core.session is not None and "eyes_off_road" in core.active_actions
+    assert core.session is not None and "EYES_OFF_ROAD" in core.active_actions
     assert p.DRIVE_RESULT not in [m["type"] for m in ft.sent]
 
 
@@ -84,9 +84,9 @@ async def test_dismiss_command_dismisses_latched_alerts(console, core, clock, ca
     core.handle(start_msg())
     await con.execute("dismiss")
     assert "no latched alert showing" in capsys.readouterr().out
-    await con.execute("start eyes_closed")
+    await con.execute("start EYES_CLOSED")
     await ft.sleep(1.0)                                      # CRITICAL, needs dismiss
-    await con.execute("stop eyes_closed")
+    await con.execute("stop EYES_CLOSED")
     await con.execute("status")
     assert "EYES_CLOSED CRITICAL latched" in capsys.readouterr().out
     await con.execute("dismiss")

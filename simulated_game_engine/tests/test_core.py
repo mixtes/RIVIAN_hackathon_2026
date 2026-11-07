@@ -32,10 +32,10 @@ def test_hello_reply(core) -> None:
 
 def test_hello_reports_detected_actions_when_the_engine_declares_them(engine, clock) -> None:
     core = BridgeCore(engine.new_system(), clock, engine_version="v",
-                      detected_actions=("phone_use", "PHONE_CALL"))
+                      detected_actions=("PHONE_USE", "PHONE_CALL"))
     [reply] = core.handle(inbound(p.HELLO, protocol=1))
     assert reply["payload"]["supported_actions"] == ["PHONE_CALL", "PHONE_USE"]
-    assert core.configured_actions == [a.lower() for a in ALL_ACTIONS]  # simulator: all 8
+    assert core.configured_actions == list(ALL_ACTIONS)  # simulator: all 8
 
 
 def test_hello_reports_active_session(core) -> None:
@@ -73,9 +73,9 @@ def test_unknown_fields_are_ignored(core) -> None:
 
 def test_messages_are_json_serializable(core, clock) -> None:
     _start(core)
-    out = core.set_action("phone_call", True)
+    out = core.set_action("PHONE_CALL", True)
     out += run_for(core, clock, 3.5)
-    out += core.set_action("phone_call", False)
+    out += core.set_action("PHONE_CALL", False)
     out += core.end_session()
     for m in out:
         json.dumps(m)
@@ -85,7 +85,7 @@ def test_messages_are_json_serializable(core, clock) -> None:
 
 def test_session_start_is_idempotent_and_resumes(core, clock) -> None:
     sid = _start(core)
-    core.set_action("eyes_off_road", True)
+    core.set_action("EYES_OFF_ROAD", True)
     run_for(core, clock, 1.2)                       # AUDIO alert issued
     clock.advance(0.1)
     out = core.handle(start_msg(sid))               # reconnect: same session_id
@@ -137,9 +137,16 @@ def test_session_start_for_ended_session_is_rejected(core) -> None:
     assert [m["type"] for m in out] == [p.ERROR, p.DRIVE_RESULT]
     assert out[0]["payload"]["code"] == p.SESSION_ENDED
     assert core.session is None
+    first_result = out[1]
     core.handle(inbound(p.DRIVE_RESULT_ACK, session_id=sid))
-    out = core.handle(start_msg(sid))               # still rejected after the ack
-    assert [m["type"] for m in out] == [p.ERROR]
+    # Still rejected after the ack, but the result is re-sent: an app restored to a state
+    # before the result (emulator snapshot, crash) resumes the drive and needs it to close it.
+    out = core.handle(start_msg(sid))
+    assert [m["type"] for m in out] == [p.ERROR, p.DRIVE_RESULT]
+    assert out[1]["msg_id"] == first_result["msg_id"]   # the same result: the app de-duplicates
+    assert core.session is None and not core.pending_results
+    core.handle(inbound(p.DRIVE_RESULT_ACK, session_id=sid))
+    assert not core.pending_results
 
 
 def test_session_end_for_unknown_session(core) -> None:
@@ -149,7 +156,7 @@ def test_session_end_for_unknown_session(core) -> None:
 
 def test_driver_events_require_a_session(core) -> None:
     with pytest.raises(NoActiveSessionError):
-        core.set_action("phone_call", True)
+        core.set_action("PHONE_CALL", True)
     with pytest.raises(NoActiveSessionError):
         core.end_session()
     assert core.tick() == []
@@ -160,7 +167,7 @@ def test_driver_events_require_a_session(core) -> None:
 def test_phone_call_escalation_reuses_alert_id_and_clears(core, clock) -> None:
     sid = _start(core)
     clock.advance(10)
-    [visual] = core.set_action("PHONE_CALL", True)          # upper-case input accepted
+    [visual] = core.set_action("phone_call", True)    # typing is case-insensitive; stored UPPER_CASE
     assert visual["type"] == p.ALERT
     pv = visual["payload"]
     assert (pv["type"], pv["level"], pv["session_id"]) == ("PHONE_CALL", "VISUAL", sid)
@@ -175,18 +182,18 @@ def test_phone_call_escalation_reuses_alert_id_and_clears(core, clock) -> None:
     assert 3.0 <= audio["payload"]["duration_so_far_s"] <= 3.15
     assert audio["payload"]["started_at"] == pv["started_at"]
 
-    [clear] = core.set_action("phone_call", False)
+    [clear] = core.set_action("PHONE_CALL", False)
     assert clear["type"] == p.ALERT_CLEAR
     assert clear["payload"] == {"alert_id": pv["alert_id"]}
 
     # next occurrence gets a new id
-    [again] = core.set_action("phone_call", True)
+    [again] = core.set_action("PHONE_CALL", True)
     assert again["payload"]["alert_id"] != pv["alert_id"]
 
 
 def test_eyes_off_road_full_escalation(core, clock) -> None:
     _start(core)
-    assert core.set_action("eyes_off_road", True) == []     # first step is at 1 s
+    assert core.set_action("EYES_OFF_ROAD", True) == []     # first step is at 1 s
     out = of_type(run_for(core, clock, 5.0), p.ALERT)
     assert [m["payload"]["level"] for m in out] == ["AUDIO", "HAPTIC", "CRITICAL"]
     assert len({m["payload"]["alert_id"] for m in out}) == 1
@@ -197,7 +204,7 @@ def test_eyes_off_road_full_escalation(core, clock) -> None:
 
 def test_still_active_alert_is_refreshed_so_the_app_does_not_expire_it(core, clock) -> None:
     _start(core)
-    core.set_action("eyes_off_road", True)
+    core.set_action("EYES_OFF_ROAD", True)
     out = of_type(run_for(core, clock, 30.0), p.ALERT)
     levels = [m["payload"]["level"] for m in out]
     assert levels[:3] == ["AUDIO", "HAPTIC", "CRITICAL"]
@@ -212,31 +219,31 @@ def test_still_active_alert_is_refreshed_so_the_app_does_not_expire_it(core, clo
     assert all(4.95 <= g <= 5.15 for g in gaps)  # within one 0.1 s tick
     assert max(gaps) < p.DEFAULT_TTL_S["VISUAL"]  # always inside the shortest app ttl
 
-    [clear] = core.set_action("eyes_off_road", False)
+    [clear] = core.set_action("EYES_OFF_ROAD", False)
     assert clear["type"] == p.ALERT_CLEAR
     assert run_for(core, clock, 10.0) == []      # no refresh after the action ended
 
 
 def test_action_ending_before_first_alert_sends_no_clear(core, clock) -> None:
     _start(core)
-    core.set_action("eyes_off_road", True)
+    core.set_action("EYES_OFF_ROAD", True)
     run_for(core, clock, 0.5)
-    assert core.set_action("eyes_off_road", False) == []
+    assert core.set_action("EYES_OFF_ROAD", False) == []
 
 
 def test_unconfigured_action_is_forwarded_and_ignored(core, clock) -> None:
     _start(core)
-    assert core.set_action("sneezing", True) == []
+    assert core.set_action("SNEEZING", True) == []
     assert run_for(core, clock, 2.0) == []
-    assert core.set_action("sneezing", False) == []
+    assert core.set_action("SNEEZING", False) == []
     result = core.end_session()[-1]["payload"]
     assert "SNEEZING" not in {m["type"] for m in result["mistakes"]}
 
 
 def test_simultaneous_escalations_are_all_delivered(core, clock) -> None:
     _start(core)
-    core.set_action("phone_call", True)
-    core.set_action("eyes_off_road", True)
+    core.set_action("PHONE_CALL", True)
+    core.set_action("EYES_OFF_ROAD", True)
     out = of_type(run_for(core, clock, 3.5), p.ALERT)
     levels = [(m["payload"]["type"], m["payload"]["level"]) for m in out]
     assert ("EYES_OFF_ROAD", "AUDIO") in levels
@@ -246,8 +253,8 @@ def test_simultaneous_escalations_are_all_delivered(core, clock) -> None:
 
 def test_same_tick_escalations_of_two_actions_both_arrive(core, clock) -> None:
     _start(core)
-    core.set_action("phone_call", True)
-    core.set_action("eyes_off_road", True)
+    core.set_action("PHONE_CALL", True)
+    core.set_action("EYES_OFF_ROAD", True)
     clock.advance(3.0)                       # phone AUDIO (3 s) and eyes HAPTIC (2.5 s) due
     out = core.tick()
     assert sorted((m["payload"]["type"], m["payload"]["level"]) for m in out) == [
@@ -256,7 +263,7 @@ def test_same_tick_escalations_of_two_actions_both_arrive(core, clock) -> None:
 
 def test_alert_ids_come_from_the_engine(core) -> None:
     _start(core)
-    [msg] = core.set_action("phone_call", True)
+    [msg] = core.set_action("PHONE_CALL", True)
     [engine_alert] = core.system.alerts.active_alerts()
     assert msg["payload"]["alert_id"] == engine_alert.alert_id
     assert msg["payload"]["requires_ack"] is False
@@ -270,13 +277,13 @@ def _dismiss(core: BridgeCore, alert_id: str, session_id: str | None = None) -> 
 
 def test_latched_alert_stays_after_the_action_ends_until_dismissed(core, clock) -> None:
     sid = _start(core)
-    core.set_action("eyes_closed", True)
+    core.set_action("EYES_CLOSED", True)
     [alert] = of_type(run_for(core, clock, 1.0), p.ALERT)     # CRITICAL at 0.5 s
     pa = alert["payload"]
     assert (pa["type"], pa["level"], pa["requires_ack"]) == ("EYES_CLOSED", "CRITICAL", True)
     assert pa["message"]
 
-    assert core.set_action("eyes_closed", False) == []       # eyes open: no clear (latched)
+    assert core.set_action("EYES_CLOSED", False) == []       # eyes open: no clear (latched)
     refreshes = of_type(run_for(core, clock, 12.0), p.ALERT)
     assert len(refreshes) == 2                               # keep-alive continues
     assert {m["payload"]["alert_id"] for m in refreshes} == {pa["alert_id"]}
@@ -291,7 +298,7 @@ def test_latched_alert_stays_after_the_action_ends_until_dismissed(core, clock) 
 
 def test_dismiss_while_eyes_still_closed_starts_a_new_occurrence(core, clock) -> None:
     _start(core)
-    core.set_action("eyes_closed", True)
+    core.set_action("EYES_CLOSED", True)
     [first] = of_type(run_for(core, clock, 1.0), p.ALERT)
     out = core.dismiss(first["payload"]["alert_id"])
     assert [m["type"] for m in out] == [p.ALERT_CLEAR]
@@ -302,10 +309,10 @@ def test_dismiss_while_eyes_still_closed_starts_a_new_occurrence(core, clock) ->
 
 def test_dismiss_is_ignored_for_non_latched_unknown_or_foreign_alerts(core, clock) -> None:
     _start(core)
-    [phone] = core.set_action("phone_call", True)
+    [phone] = core.set_action("PHONE_CALL", True)
     assert _dismiss(core, phone["payload"]["alert_id"]) == []     # not latched
     assert _dismiss(core, "no-such-id") == []
-    core.set_action("eyes_closed", True)
+    core.set_action("EYES_CLOSED", True)
     [latched] = of_type(run_for(core, clock, 1.0), p.ALERT)
     lid = latched["payload"]["alert_id"]
     assert _dismiss(core, lid, session_id=str(uuid.uuid4())) == []  # other session
@@ -320,9 +327,9 @@ def test_dismiss_without_a_session_and_bad_payload(core) -> None:
 
 def test_latched_alert_is_resent_on_resume_and_cleared_at_session_end(core, clock) -> None:
     sid = _start(core)
-    core.set_action("eyes_closed", True)
+    core.set_action("EYES_CLOSED", True)
     run_for(core, clock, 1.0)
-    core.set_action("eyes_closed", False)
+    core.set_action("EYES_CLOSED", False)
     out = core.handle(start_msg(sid))                        # reconnect
     assert [m["type"] for m in out] == [p.SESSION_ACK, p.ALERT]
     assert out[1]["payload"]["requires_ack"] is True
@@ -334,8 +341,8 @@ def test_latched_alert_is_resent_on_resume_and_cleared_at_session_end(core, cloc
 
 def test_dismiss_all_dismisses_only_latched_alerts(core, clock) -> None:
     _start(core)
-    core.set_action("phone_call", True)
-    core.set_action("eyes_closed", True)
+    core.set_action("PHONE_CALL", True)
+    core.set_action("EYES_CLOSED", True)
     run_for(core, clock, 1.0)
     out = core.dismiss_all()
     [clear] = of_type(out, p.ALERT_CLEAR)
@@ -345,7 +352,7 @@ def test_dismiss_all_dismisses_only_latched_alerts(core, clock) -> None:
 
 def test_end_session_clears_alerts_then_sends_result(core, clock) -> None:
     sid = _start(core)
-    [alert] = core.set_action("phone_call", True)
+    [alert] = core.set_action("PHONE_CALL", True)
     clock.advance(8)
     out = core.end_session()
     assert [m["type"] for m in out] == [p.ALERT_CLEAR, p.DRIVE_RESULT]
