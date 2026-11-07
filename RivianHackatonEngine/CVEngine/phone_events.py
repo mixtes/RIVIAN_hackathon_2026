@@ -28,7 +28,7 @@ POSITIVE, NEGATIVE, UNKNOWN = 'POSITIVE', 'NEGATIVE', 'UNKNOWN'
 ACTION = 'PHONE_USE'
 
 KP_CONF = 0.35
-NOSE, LEAR, REAR, LSHO, RSHO, LWR, RWR = 0, 3, 4, 5, 6, 9, 10
+NOSE, LEAR, REAR, LSHO, RSHO, LEL, REL, LWR, RWR = 0, 3, 4, 5, 6, 7, 8, 9, 10
 DEFAULT_SCALE = 350.0          # shoulder width in px when shoulders are not visible
 EAR_DIST = 0.8                 # phone center to ear/nose, in shoulder widths
 EAR_HAND_DIST = 0.8            # wrist to phone center for a phone held at the ear
@@ -42,6 +42,10 @@ LOOK_DOWN_PITCH = 0.17         # (nose y - ear y) / shoulder width above this ->
 MIN_FINGERS_ON_PHONE = 3       # hand points on the phone box needed for a still phone to count as held
 MIN_STILL_CONF = 0.3           # a still phone (no motion cue) also needs this detector confidence;
                                # weaker boxes were e.g. the textured grip pad of the steering wheel
+PALM_ALONG = (0.35, 0.75)      # phone in the palm: center this far past the wrist along the forearm (shoulder widths)
+PALM_ACROSS = 0.33             # ...and at most this far to the side of the forearm line
+PALM_SLOPE = 0.8               # ...and at most ~39 degrees off the forearm direction
+MIN_PALM_CONF = 0.15           # detector confidence needed for the in-palm check
 
 WINDOW_S = 2.0                 # confirmation window
 START_MIN_POSITIVE = 3
@@ -141,20 +145,43 @@ class PhoneEvidence:
         moving = self._moving(ts, c - shift, sw)
         if moving:
             return Evidence(ts, POSITIVE, 'phone in hand and moving', tuple(p))
+        conf = p[4] if len(p) > 4 else 1.0
+        palm = phone_in_palm(kp, c, sw)
         if looking_down(kp, sw):
-            # A still phone near the hand while looking down is only use if the fingers are on it;
-            # otherwise it is e.g. a hand on the wheel next to a lying phone while glancing at the dash.
-            if len(p) > 4 and p[4] < MIN_STILL_CONF:
+            # A still phone near the hand while looking down is only use if it is held: fingers on it
+            # (hand landmarks), or, when the fingers are hidden behind the phone, the phone sits in the palm
+            # (straight out from the forearm). Otherwise it is e.g. a hand on the wheel next to a lying phone.
+            if conf < min(MIN_STILL_CONF, MIN_PALM_CONF):
                 return Evidence(ts, UNKNOWN, 'looking down, phone detection too weak', tuple(p))
             points = _hand_points_near(hands() if callable(hands) else hands, c)
-            if points is None:
-                return Evidence(ts, UNKNOWN, 'looking down, hand on phone not confirmed', tuple(p))
-            if fingers_on_phone(points, p) >= MIN_FINGERS_ON_PHONE:
-                return Evidence(ts, POSITIVE, 'phone held, driver looking at it', tuple(p))
-            return Evidence(ts, NEGATIVE, 'hand not holding the phone', tuple(p))
-        if moving is None:
-            return Evidence(ts, UNKNOWN, 'phone in hand, movement not known yet', tuple(p))
+            if points is not None:
+                if conf >= MIN_STILL_CONF and fingers_on_phone(points, p) >= MIN_FINGERS_ON_PHONE:
+                    return Evidence(ts, POSITIVE, 'phone held, driver looking at it', tuple(p))
+                if not palm:
+                    return Evidence(ts, NEGATIVE, 'hand not holding the phone', tuple(p))
+            if palm and conf >= MIN_PALM_CONF:
+                return Evidence(ts, POSITIVE, 'phone in palm, driver looking at it', tuple(p))
+            return Evidence(ts, UNKNOWN, 'looking down, hand on phone not confirmed', tuple(p))
+        if moving is None or palm:
+            return Evidence(ts, UNKNOWN, 'phone in hand, use not clear', tuple(p))
         return Evidence(ts, NEGATIVE, 'phone near hand but lying still', tuple(p))
+
+
+def phone_in_palm(kp, center, sw):
+    """True when the phone center sits where the palm is: straight out from a wrist along its forearm
+    (elbow -> wrist direction). A lying phone next to a resting hand is beside or behind the wrist."""
+    for wr, el in ((LWR, LEL), (RWR, REL)):
+        if kp[wr, 2] < KP_CONF or kp[el, 2] < KP_CONF:
+            continue
+        u = kp[wr, :2] - kp[el, :2]
+        if np.hypot(*u) < 1e-6:
+            continue
+        u = u / np.hypot(*u)
+        v = (np.asarray(center) - kp[wr, :2]) / sw
+        along, across = float(v @ u), abs(float(u[0] * v[1] - u[1] * v[0]))
+        if PALM_ALONG[0] <= along <= PALM_ALONG[1] and across <= min(PALM_ACROSS, PALM_SLOPE * along):
+            return True
+    return False
 
 
 def fingers_on_phone(points, phone, pad=0.15):

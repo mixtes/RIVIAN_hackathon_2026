@@ -31,7 +31,7 @@ The user wants to be able to add events later and be specific about detection lo
 | `rules.py` | Rule engine: per-frame flags, temporal smoothing, event list. Writes `events.csv`, `frame_flags.csv`, `flags.npz`. Requires `wheel.json` from the same folder as the cache; missing or invalid calibration is an error. |
 | `render.py` | Annotated video (frame number, skeleton, wheel zone, phone boxes, alerts) + a key-frame JPG per alert. |
 | `live_phone.py` | Live PHONE_USE monitor: reads a camera/stream/video in order, always processes the newest frame (skipping frames while busy; `--stride N` for deterministic offline runs), detects phones (hybrid: `--dark-phone-model` on dark frames), builds per-frame evidence and confirmed events with `phone_events.py`, and optionally feeds `SafetySystem` (`--engine`). `--show` window, `--log` per-frame CSV, `--events` JSONL of start/end updates, `--record` video, `--no-hands` skips hand landmarks. |
-| `phone_events.py` | PHONE_USE decision logic (one behavior for phone at ear and phone in hand). Per-frame evidence is POSITIVE/NEGATIVE/UNKNOWN: at ear = phone near the head with a hand at it; in hand = phone near a wrist that moves relative to the cabin (camera shake removed by `CabinMotion`), or a still phone while the driver looks down, only if the detection is confident (>= 0.3) and hand landmarks put >= 3 points on the phone. `EventTracker` (`PhoneUseTracker`) confirms: start with >= 3 POSITIVE frames, >= 60% of known frames and >= 1 s span in 2 s; end after 3 s without POSITIVE (with a NEGATIVE), after 3 s without observation, or at clip end. |
+| `phone_events.py` | PHONE_USE decision logic (one behavior for phone at ear and phone in hand). Per-frame evidence is POSITIVE/NEGATIVE/UNKNOWN: at ear = phone near the head with a hand at it; in hand = phone near a wrist that moves relative to the cabin (camera shake removed by `CabinMotion`), or a still phone while the driver looks down, only if it is held: hand landmarks put >= 3 points on a confident (>= 0.3) phone box, or, when the fingers are hidden behind the phone (MediaPipe often fails then), the phone sits in the palm (0.35-0.75 shoulder widths past the wrist along the elbow->wrist line, at most ~39 degrees off it). `EventTracker` (`PhoneUseTracker`) confirms: start with >= 3 POSITIVE frames, >= 60% of known frames and >= 1 s span in 2 s; end after 3 s without POSITIVE (with a NEGATIVE), after 3 s without observation, or at clip end. |
 | `hands.py` | MediaPipe hand landmarks in an enlarged crop around each driver wrist (`requirements-hands.txt`, install with `--no-deps`); used by `phone_events.py` to check that fingers are on a still phone. Also has hands-off-wheel helpers (not used: the car has a sensor for that). |
 | `phone_data.py`, `label_review.py`, `phone_drivers.json` | Phone-detector fine-tuning: frame selection with draft labels, driver-split dataset, local review window, synthetic dark copies, training and evaluation. See "Phone detector fine-tuning" below. |
 | `draw_wheel.py` (not included) | Previously proposed manual calibration tool; unavailable in this checkout. |
@@ -127,14 +127,14 @@ confidence (0.17). Brightening, higher resolution, hand crops, a lower threshold
   `eval`. Copy `phone_dataset/runs/phone_ft/` back into the local `phone_dataset/runs/`.
 
 ### PHONE_USE validation (all 116 clips, `--stride 8`, hybrid detector)
-- Events in 8 clips after the fixes, all real phone use. All 97 clips without events before remain without events (the fixes
-  only make evidence stricter). Removed false alarms: 010829 (lying tray phone, hand reaching, looking
+- Events in 10 clips, all real phone use (023609: picks the phone up, looks at it, leaves the car).
+  Removed false alarms: 010829 (lying tray phone, hand reaching, looking
   down), 014837 (steering-wheel grip pad detected as a phone at conf 0.15-0.28), 023436 9-29 s (dark object
-  on the lap, hand on the wheel).
-- Known misses: phones held still low by the console when MediaPipe finds no hand (084339), short use at
-  the clip end (021132), and clips where the phone is not detected (011802, 015556, 025248, 025453,
-  030915, 085155). The detector cannot tell a held phone from a lying one by itself; a second training round
-  with separate "phone in hand" / "phone lying" classes is the planned fix.
+  on the lap, hand on the wheel). 084339 (phone held still low over the console, fingers hidden so no hand
+  landmarks) is found by the in-palm geometry.
+- Known misses: short use at the clip end (021132) and clips where the phone is not detected (011802,
+  015556, 025248, 025453, 030915, 085155). The detector finds a clearly visible held phone in only about
+  half of the frames (084339: 19/36); a second training round with more bright in-hand phones is the fix.
 
 ## 5. Rules (in `rules.py`), thresholds tuned on ONE clip
 - Scale = shoulder width in pixels. Keypoints below conf 0.35 are ignored.

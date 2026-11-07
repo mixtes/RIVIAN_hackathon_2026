@@ -85,6 +85,24 @@ class EvidenceTests(unittest.TestCase):
         for hands in (None, {'R': dict(wrist=(900, 1250), points=None)}):
             self.assertNotIn(pe.POSITIVE, [s.state for s in self.look_down(hands)])
 
+    def palm_frames(self, phone_xy, head_down=True):
+        e = pe.PhoneEvidence()
+        out = []
+        for t in range(10):
+            k = kp(RWR=(900, 1250), REL=(850, 1000))                               # forearm points down
+            if head_down:
+                k[pe.NOSE] = [1150, 680, .9]
+            out.append(e.update(t * 0.33, k, [phone(*phone_xy, conf=0.2)], hands={'R': dict(wrist=(900, 1250), points=None)}))
+        return [s.state for s in out]
+
+    def test_still_phone_in_palm_with_hidden_fingers_is_use_when_looked_at(self):
+        self.assertEqual(self.palm_frames((930, 1400))[-1], pe.POSITIVE)          # 0.5 sw past the wrist
+        self.assertNotIn(pe.POSITIVE, self.palm_frames((930, 1400), head_down=False))
+
+    def test_still_phone_beside_or_behind_the_wrist_is_not_in_palm(self):
+        self.assertNotIn(pe.POSITIVE, self.palm_frames((1060, 1290)))             # to the side
+        self.assertNotIn(pe.POSITIVE, self.palm_frames((870, 1130)))              # behind the wrist
+
     def test_hand_search_runs_only_when_needed(self):
         calls = []
         e = pe.PhoneEvidence()
