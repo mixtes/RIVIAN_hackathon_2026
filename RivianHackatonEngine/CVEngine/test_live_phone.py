@@ -102,5 +102,52 @@ class LatestFrameTests(unittest.TestCase):
         self.assertEqual(seen, sorted(set(seen)))
 
 
+class PhoneMonitorTests(unittest.TestCase):
+    """PhoneMonitor with a fake detector: a phone moving in the driver's hand switches the bit on after
+    confirmation and off again ~3 s after the phone is gone."""
+
+    def make(self, boxes_at):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        class FakeYolo:
+            names = {67: 'cell phone'}
+
+            def __init__(self, *_):
+                pass
+
+            def __call__(self, crop, **_):
+                b = boxes_at[0]
+                xyxy = np.array([[b[0] - lp.CX0, b[1] - lp.CY0, b[2] - lp.CX0, b[3] - lp.CY0]] if b else np.zeros((0, 4)))
+                conf = np.array([b[4]] if b else [])
+                tensor = lambda a: SimpleNamespace(cpu=lambda: SimpleNamespace(numpy=lambda: a))
+                return [SimpleNamespace(boxes=SimpleNamespace(xyxy=tensor(xyxy), conf=tensor(conf)))]
+
+        with patch('ultralytics.YOLO', FakeYolo):
+            return lp.PhoneMonitor(dark_phone_model=None, hands=False)
+
+    def test_bit_follows_confirmed_phone_use(self):
+        current = [None]
+        mon = self.make(current)
+        frame = np.zeros((1536, 1920, 3), np.uint8)
+        bits = []
+        for i in range(40):
+            t = i / 3
+            if i < 15:
+                x, y = 1050 + 12 * i, 1300 - 6 * i                               # phone moves with the hand
+                current[0] = phone_at(x, y)
+                kp = keypoints(RWR=(x, y - 60))
+            else:
+                current[0], kp = None, keypoints(RWR=(1500, 1100))               # phone gone
+            bits.append(mon.update(t, frame, kp))
+        self.assertEqual(bits[0], 0)                                               # not confirmed yet
+        self.assertIn(1, bits[:15])
+        on = bits.index(1)
+        self.assertGreaterEqual(on, 3)
+        self.assertEqual(bits[-1], 0)
+        off = len(bits) - bits[::-1].index(1)
+        self.assertGreaterEqual((off - 15) / 3, 2.5)                               # ~3 s tail after use ends
+
+
 if __name__ == '__main__':
     unittest.main()

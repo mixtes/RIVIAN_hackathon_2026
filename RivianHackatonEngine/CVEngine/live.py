@@ -13,7 +13,9 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
   --head        how the head is measured (default face): face = MediaPipe face angles in degrees, pose keypoints
                 as the fallback where no face is found; pose = pose keypoints only (no face model)
   --flags FILE  the byte sent to the AlertEngine/GameEngine per analyzed frame (cv_flags.py): 0x20 hands off the
-                wheel, 0x40 head turned away or down/up (eyes_off_road.py), lightly smoothed. CSV: frame,time_s,flags,hands_off,eyes_off_road
+                wheel, 0x40 head turned away or down/up (eyes_off_road.py), lightly smoothed; 0x10 phone use (live_phone.PhoneMonitor,
+                confirmed: ~1 s to switch on, ~3 s to switch off). CSV: frame,time_s,flags,hands_off,eyes_off_road,phone
+  --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
 """
 import argparse, json, sys, time
 import cv2, numpy as np
@@ -167,6 +169,10 @@ def main():
                          '0..255); every other message goes to stderr')
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
+    ap.add_argument('--no-phone', action='store_true', help='do not run phone detection (bit 0x10 stays 0)')
+    ap.add_argument('--dark-phone-model', default=None,
+                    help='fine-tuned phone model for dark frames (default: phone_dataset/runs/phone_ft/weights/'
+                         'best.pt if present)')
     args = ap.parse_args()
     stream_out = sys.stdout
     if args.stream:
@@ -186,6 +192,12 @@ def main():
     if args.head == 'face':
         import head_face
         faces = head_face.FaceHead()
+    phone = None
+    if not args.no_phone:
+        from live_phone import PhoneMonitor
+        phone = PhoneMonitor(dark_phone_model=args.dark_phone_model or PhoneMonitor.DEFAULT_DARK_MODEL,
+                             device=device)
+        print(f'phone detection on (dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
     cap, is_cam = open_source(args.source)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     writer = None
@@ -194,7 +206,7 @@ def main():
     ocsv = open(args.output, 'w') if args.output else None
     bcsv = open(args.flags, 'w') if args.flags else None
     if bcsv:
-        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road\n')
+        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,phone\n')
     head = eyes_off_road.HeadPoseDetector()
     hands_filter, head_filter = cv_flags.FlickerFilter(), cv_flags.FlickerFilter()
     if ocsv:
@@ -242,7 +254,9 @@ def main():
             obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]))
             hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
             head_bit = head_filter.update(t, head.raw_bit(obs))
-            flags = cv_flags.pack_flags(hands_off=bool(hands_bit), off_road=bool(head_bit))
+            # PHONE_USE is already confirmed/debounced by phone_events.EventTracker: no FlickerFilter on top.
+            phone_bit = phone.update(t, frame, kp) if phone is not None else 0
+            flags = cv_flags.pack_flags(hands_off=bool(hands_bit), off_road=bool(head_bit), phone=bool(phone_bit))
             if args.stream:
                 try:
                     print(cv_flags.format_record(t, flags), file=stream_out, flush=True)
@@ -258,7 +272,7 @@ def main():
                 ocsv.write(f'{frame_no - 1},{t:.3f},{off},{unk}\n')
                 ocsv.flush()
             if bcsv:
-                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit}\n')
+                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit},{phone_bit}\n')
                 bcsv.flush()
             if fcsv:
                 cells = []
@@ -325,8 +339,18 @@ def main():
                 if obs.blink is not None:
                     head_text += f'  blink {obs.blink:.2f}'
                 cv2.putText(view, head_text, (30, 240), 0, 1.3, head_color, 4)
-                cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit}',
+                cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit} '
+                                  f'phone={phone_bit}',
                             (30, 320), 0, 1.5, (0, 0, 255) if flags else (200, 200, 200), 4)
+                if phone is not None and phone.last is not None:
+                    ev, boxes, _ = phone.last
+                    for p in boxes:
+                        used = ev.state == 'POSITIVE' and ev.phone is not None and tuple(p[:4]) == tuple(ev.phone[:4])
+                        col = (0, 0, 255) if used else (255, 0, 255)
+                        cv2.rectangle(view, (int(p[0]), int(p[1])), (int(p[2]), int(p[3])), col, 4)
+                        cv2.putText(view, f'phone {p[4]:.2f}', (int(p[0]), int(p[1]) - 10), 0, 1.2, col, 3)
+                    cv2.putText(view, f'PHONE {"USE" if phone_bit else "-"}  evidence {ev.state} ({ev.reason})',
+                                (30, 400), 0, 1.3, (0, 0, 255) if phone_bit else (200, 200, 200), 4)
                 if kp is not None and obs.yaw is not None:
                     for k in (eyes_off_road.NOSE, eyes_off_road.LEYE, eyes_off_road.REYE):
                         cv2.circle(view, (int(kp[k, 0]), int(kp[k, 1])), 9, head_color, -1)

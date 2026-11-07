@@ -32,7 +32,7 @@ CV_FLAG_ACTIONS: Tuple[Tuple[int, str], ...] = (
     (0x80, "EYES_CLOSED"),       # fell asleep (not produced by CVEngine yet)
     (0x40, "EYES_OFF_ROAD"),     # looked off the road
     (0x20, "HANDS_OFF_WHEEL"),   # hands off the steering wheel
-    (0x10, "PHONE_USE"),         # phone at the ear or in hand (not wired in CVEngine yet)
+    (0x10, "PHONE_USE"),         # phone at the ear or in hand (live_phone.PhoneMonitor)
 )
 CV_FLAGS_MASK = 0xF0             # the low nibble is reserved and ignored
 
@@ -44,8 +44,8 @@ CV_FLAGS_MASK = 0xF0             # the low nibble is reserved and ignored
 CV_GAP_SECONDS = 2.0
 
 # The subset of the 8 canonical actions that real detection (CVEngine) emits today:
-# live.py sets bit 0x40 (eyes_off_road.py) and bit 0x20 (hands off the wheel).
-DETECTED_ACTIONS = ("EYES_OFF_ROAD", "HANDS_OFF_WHEEL")
+# live.py sets bit 0x40 (eyes_off_road.py), bit 0x20 (hands off the wheel) and bit 0x10 (phone use).
+DETECTED_ACTIONS = ("EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_USE")
 
 __all__ = ["SafetySystem", "Alert", "AlertClear", "AlertLevel", "AlertUpdate",
            "DriveReport", "DETECTED_ACTIONS", "CV_FLAG_ACTIONS", "CV_FLAGS_MASK",

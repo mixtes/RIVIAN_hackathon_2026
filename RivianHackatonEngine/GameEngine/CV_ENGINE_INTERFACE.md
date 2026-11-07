@@ -50,7 +50,7 @@ Most significant bit first. **A higher bit is a higher priority**, so a plain nu
 | 7 | `0x80` | fell asleep | `EYES_CLOSED` (drowsiness is reported as `EYES_CLOSED`, see `CAR_FRONTEND_INTERFACE.md` §2) | **not implemented yet** |
 | 6 | `0x40` | looked off the road | `EYES_OFF_ROAD` | **not implemented yet** |
 | 5 | `0x20` | hands off the steering wheel | `HANDS_OFF_WHEEL` | **implemented** |
-| 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | offline rules exist in CVEngine; **not wired into the live output yet** |
+| 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | live (`live_phone.PhoneMonitor` in `live.py`); confirmed state: about 1 s to switch on, about 3 s to switch off |
 | 3 to 0 | `0x0F` | reserved | none | always sent as 0 |
 
 Notes:

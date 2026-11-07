@@ -313,7 +313,7 @@ class ReplayTests(unittest.TestCase):
     def test_detected_actions_match_cv_bits(self):
         bit_actions = {a for _, a in main.CV_FLAG_ACTIONS}
         self.assertTrue(set(main.DETECTED_ACTIONS) <= bit_actions)
-        self.assertEqual(set(main.DETECTED_ACTIONS), {"EYES_OFF_ROAD", "HANDS_OFF_WHEEL"})
+        self.assertEqual(set(main.DETECTED_ACTIONS), {"EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_USE"})
 
     def test_read_both_live_py_formats(self):
         stream = ["0.000,0", "0.200,32", "", "garbage", "0.400,96"]
