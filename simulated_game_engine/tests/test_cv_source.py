@@ -70,9 +70,31 @@ def test_on_frame_feeds_the_score(core, clock) -> None:
     assert result["score"] < 100
 
 
+def test_on_frame_uses_the_frame_time_not_the_arrival_time(core, clock) -> None:
+    """Records processed late, in a burst, must still give the real durations."""
+    _start(core)
+    go = clock.monotonic()
+    clock.advance(10.0)                                    # everything arrives 10 s later
+    records = [(0.2 * i, 0x40 if 5 <= i < 25 else 0) for i in range(30)]   # off road 1.0-5.0 s
+    for video_t, flags in records:
+        core.on_frame(flags, go + video_t)
+    result = core.end_session()[-1]["payload"]
+    [event] = [e for e in result["events"] if e["type"] == "EYES_OFF_ROAD"]
+    assert event["duration_s"] == 4.0                      # not squeezed to ~0 s by the burst
+
+
+def test_on_frame_never_uses_a_future_time(core, clock) -> None:
+    _start(core)
+    core.on_frame(0x40, clock.monotonic() + 5.0)           # clamped to now
+    clock.advance(1.0)
+    core.on_frame(0x00, clock.monotonic())
+    result = core.end_session()[-1]["payload"]
+    assert all(e["duration_s"] <= 1.0 for e in result["events"])
+
+
 def test_parse_record() -> None:
-    assert parse_record("12.346,32\n") == 32
-    assert parse_record("12.346,48,2\n") == 48          # live.py now adds the occupant count
+    assert parse_record("12.346,32\n") == (12.346, 32)
+    assert parse_record("12.346,48,2\n") == (12.346, 48)  # live.py now adds the occupant count
     assert parse_record("garbage") is None
     assert parse_record("x,32") is None
     assert parse_record("1,2,3,4") is None

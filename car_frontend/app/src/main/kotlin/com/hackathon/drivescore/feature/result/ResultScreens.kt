@@ -255,8 +255,7 @@ private fun MistakeRow(label: String, count: Int, driveDurationS: Int, total: St
 
 @Composable
 private fun SeverityPill(count: Int, driveDurationS: Int) {
-    val perHour = MistakeSeverity.perHour(count, driveDurationS)
-    val text = if (count == 0 || perHour == null) count.toString() else "$count · ${"%.1f".format(perHour)}/h"
+    val text = count.toString()
     Box(
         Modifier.heightIn(min = 44.dp).clip(CarShapes.Pill).background(CarColors.severity(MistakeSeverity.of(count, driveDurationS)))
             .padding(horizontal = Space.M),

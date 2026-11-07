@@ -57,18 +57,17 @@ def default_cv_python(engine_dir: Path) -> str:
     return sys.executable
 
 
-def parse_record(line: str) -> int | None:
-    """'12.346,32' or '12.346,32,1' (with the occupant count) -> 32.
+def parse_record(line: str) -> tuple[float, int] | None:
+    """'12.346,32' or '12.346,32,1' (with the occupant count) -> (12.346, 32).
 
-    Only the flags are used: the bridge stamps records on arrival, and the occupant count is
-    not part of the engine interface.
+    The time is the frame's video time in seconds (from the start of the video, or of the
+    camera stream). The occupant count is not part of the engine interface.
     """
     cells = line.strip().split(",")
     if len(cells) not in (2, 3):
         return None
     try:
-        float(cells[0])
-        return int(cells[1])
+        return float(cells[0]), int(cells[1])
     except ValueError:
         return None
 
@@ -89,6 +88,7 @@ class CvSource:
         self.play_resumed = play_resumed
         self.started_wall = core.clock.wall()    # drives the app started before this are resumed
         self._skipped: str | None = None           # resumed drive we already said we skip
+        self._mono_go = 0.0                        # bridge clock when the video started
         self.state = "stopped"          # for `status`: loading / ready / playing / stopped
         self._task: asyncio.Task[None] | None = None
         self._proc: asyncio.subprocess.Process | None = None
@@ -155,6 +155,10 @@ class CvSource:
             log.info("CV: ready. Start a drive in the car app to play the video.")
             session_id = await self._wait_for_new_drive()
             assert proc.stdin is not None
+            # live.py starts its video clock right after reading "go": a record at video time v
+            # happened at go + v on the bridge clock. Using that instead of the arrival time
+            # keeps durations exact when records are processed late or in bursts.
+            self._mono_go = self.core.clock.monotonic()
             proc.stdin.write(b"go\n")
             await proc.stdin.drain()
             self.state = "playing"
@@ -208,26 +212,56 @@ class CvSource:
         """Feed records until the video ends (True) or the drive ends first (False)."""
         assert proc.stdout is not None
         prev = 0
-        while True:
-            if not self._same_session(session_id):
-                log.info("CV: the drive ended in the app, stopping the video")
-                return False
-            try:
-                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=0.5)
-            except TimeoutError:
-                continue
-            if not raw:
-                return True
-            flags = parse_record(raw.decode("utf-8", "replace"))
-            if flags is None or not self._same_session(session_id):
-                continue
-            masked = flags & 0xF8
-            if masked != prev:
-                for bit, action in CV_BITS:
-                    if (masked ^ prev) & bit:
-                        log.info("CV: %s %s", action, "detected" if masked & bit else "ended")
-                prev = masked
-            await self.dispatch(self.core.on_frame(flags))
+        times: list[float] = []
+        try:
+            while True:
+                if not self._same_session(session_id):
+                    log.info("CV: the drive ended in the app, stopping the video")
+                    return False
+                try:
+                    raw = await asyncio.wait_for(proc.stdout.readline(), timeout=0.5)
+                except TimeoutError:
+                    continue
+                if not raw:
+                    return True
+                record = parse_record(raw.decode("utf-8", "replace"))
+                if record is None or not self._same_session(session_id):
+                    continue
+                video_t, flags = record
+                times.append(video_t)
+                prev = await self._feed(video_t, flags, prev)
+        finally:
+            self._log_timing(times)
+
+    def _log_timing(self, times: list[float]) -> None:
+        """How often CV records came: gaps over 2 s make the engine treat the stream as lost."""
+        if len(times) < 2:
+            log.warning("CV: only %d record(s) this drive", len(times))
+            return
+        gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+        long_gaps = sum(1 for g in gaps if g > 2.0)
+        log.log(logging.WARNING if long_gaps else logging.INFO,
+                "CV timing: %d records over %.1f s video, every %.2f s on average, longest gap "
+                "%.2f s, %d gap(s) over 2 s%s", len(times), times[-1] - times[0],
+                sum(gaps) / len(gaps), max(gaps), long_gaps,
+                " (the engine treats those as a lost stream and ends detections)"
+                if long_gaps else "")
+
+    async def _feed(self, video_t: float, flags: int, prev: int) -> int:
+        masked = flags & 0xF8
+        if masked != prev:
+            for bit, action in CV_BITS:
+                if (masked ^ prev) & bit:
+                    log.info("CV: %s %s (video %.1f s)", action,
+                             "detected" if masked & bit else "ended", video_t)
+            prev = masked
+        # Video time is real time only when live.py's player paces the video (--play) or the
+        # source is a camera; without the window, analysis slows the video down, so its
+        # time falls behind the clock and the arrival time is the better stamp.
+        real_time = self.play or self.source.isdigit()
+        ts = self._mono_go + video_t if real_time else None
+        await self.dispatch(self.core.on_frame(flags, ts))
+        return prev
 
     async def _read_stderr(self, proc: asyncio.subprocess.Process, ready: asyncio.Event) -> None:
         assert proc.stderr is not None

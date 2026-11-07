@@ -92,7 +92,13 @@ class WebSocketEngineGateway(
         when (msg) {
             is EngineMessage.Hello -> onHello(msg.payload)
             is EngineMessage.SessionAck -> ackedSessions.value = ackedSessions.value + msg.sessionId
-            is EngineMessage.DriveResult -> _results.tryEmit(IncomingDriveResult(msg.payload, msg.rawPayload))
+            is EngineMessage.DriveResult -> {
+                // The drive is over, also when the engine ended it (e.g. its video finished): stop
+                // resuming it on reconnect. Before, only endSession() cleared it, so after every
+                // engine-ended drive each reconnect re-sent session.start for the finished drive.
+                if (desired?.sessionId == msg.payload.sessionId) desired = null
+                _results.tryEmit(IncomingDriveResult(msg.payload, msg.rawPayload))
+            }
             is EngineMessage.Alert -> {
                 val p = msg.payload
                 _alerts.tryEmit(

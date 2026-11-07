@@ -109,17 +109,17 @@ class AcceptanceTests(unittest.TestCase):
 
 
 class ClipScoreTests(unittest.TestCase):
-    """Same numbers as the DEMO in clip_score.py, for a 30 s drive."""
+    """The DEMO numbers of clip_score.py for a 30 s drive, with EYES_OFF_ROAD grace 0 s (clip_score: 2 s)."""
 
     def score(self, events, end=30.0):
         return round(drive(events, end)[1].score, 1)
 
     def test_demo_clips(self):
         self.assertEqual(self.score([]), 100.0)
-        self.assertEqual(self.score([("EYES_OFF_ROAD", 5, 8)]), 96.2)
-        self.assertEqual(self.score([("EYES_OFF_ROAD", 5, 10)]), 89.5)
+        self.assertEqual(self.score([("EYES_OFF_ROAD", 5, 8)]), 89.5)
+        self.assertEqual(self.score([("EYES_OFF_ROAD", 5, 10)]), 81.6)
         self.assertEqual(self.score([("EYES_OFF_ROAD", 2, 6), ("EYES_OFF_ROAD", 12, 16),
-                                     ("EYES_OFF_ROAD", 22, 26)]), 80.6)
+                                     ("EYES_OFF_ROAD", 22, 26)]), 62.8)
         self.assertEqual(self.score([("PHONE_CALL", 10, 15)]), 77.2)
 
     def test_overlap_only_most_severe(self):
@@ -135,14 +135,22 @@ class ClipScoreTests(unittest.TestCase):
         # gaze 0-10, phone 2-4 -> gaze is penalized for 8 uncovered seconds
         g, r = drive([("EYES_OFF_ROAD", 0, 10), ("PHONE_CALL", 2, 4)])
         gaze = [o for o in r.occurrences if o.action == "EYES_OFF_ROAD"][0]
-        self.assertAlmostEqual(g.score_occurrence(gaze), 0.6 * (1 + 8 - 2.0) ** 1.5)
+        self.assertAlmostEqual(g.score_occurrence(gaze), 0.6 * (1 + 8 - 0.0) ** 1.5)
 
     def test_flicker_merged(self):
         _, r = drive([("EYES_OFF_ROAD", 4.0, 6.0), ("EYES_OFF_ROAD", 6.3, 8.0),
                       ("EYES_OFF_ROAD", 8.2, 10.0)])
         self.assertEqual(len(r.occurrences), 1)
         self.assertEqual(r.actions["EYES_OFF_ROAD"].count, 1)
-        self.assertEqual(round(r.score, 1), 85.6)
+        self.assertEqual(round(r.score, 1), 77.4)
+
+    def test_every_alerting_look_away_or_phone_use_costs_points(self):
+        # EYES_OFF_ROAD alerts from 1 s, but every reported look-away costs points, also short ones,
+        # and a longer one costs more.
+        self.assertLess(self.score([("EYES_OFF_ROAD", 5, 5.4)]), 100.0)
+        self.assertLess(self.score([("EYES_OFF_ROAD", 5, 9)]), self.score([("EYES_OFF_ROAD", 5, 5.4)]))
+        # PHONE_USE: CVEngine already confirms ~1 s before setting the bit, so any bit costs points.
+        self.assertLess(self.score([("PHONE_USE", 5, 5.5)]), 100.0)
 
     def test_long_drive_is_scaled(self):
         # The same mistake rate (one 5 s phone use per 30 s) scores the same.

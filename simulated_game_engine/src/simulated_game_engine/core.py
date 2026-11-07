@@ -249,15 +249,17 @@ class BridgeCore:
             self.active_actions.pop(action, None)
         return self._apply(self.system.on_event(action, active, t))
 
-    def on_frame(self, flags: int) -> list[p.Message]:
+    def on_frame(self, flags: int, timestamp: float | None = None) -> list[p.Message]:
         """One analyzed CVEngine frame (the state byte, CV_ENGINE_INTERFACE.md).
 
-        Timestamped on arrival with the bridge clock, the same clock as the session and the
-        ticker. Ignored when no drive is active. Needs an engine with SafetySystem.on_frame.
+        `timestamp` is the frame's time on the bridge clock (the same clock as the session and
+        the ticker), e.g. video start + the record's video time. It is never later than now.
+        None = stamp on arrival. Ignored when no drive is active. Needs SafetySystem.on_frame.
         """
         if self.session is None:
             return []
-        t = self.clock.monotonic()
+        now = self.clock.monotonic()
+        t = now if timestamp is None else min(float(timestamp), now)
         out = self._apply(self.system.on_frame(t, flags))
         engine_active = set(self.system.alerts.active_actions())
         for action in [a for a in self.active_actions if a not in engine_active]:

@@ -14,7 +14,7 @@ cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\backend
 TERMINAL 2 = CVENGINE  (bridge + video; wait for "CV: ready. Start a drive in the car app", ~15 s)
 --------------------------------------------------------------------------------------------------
 cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\RivianHackatonEngine
-.\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\05_23_62_012006_video_inCabin-good.mp4
+.\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\05_23_62_012006_video_inCabin-good.mp4 --cv-no-hands
 
   Other video: replace the file name (all videos are in RivianHackatonEngine\CVEngine\videos).
   The video always plays at normal speed; the analysis takes the newest frame it can keep up with
@@ -22,7 +22,7 @@ cd C:\Users\Matija\PycharmProjects\RIVIAN_hackathon_2026\RivianHackatonEngine
   --cv-light: pose-only hands and head (~1.3 frames/s, less accurate; not worth it on this laptop)
   --cv-no-phone: skip phone detection (no PHONE_USE alerts) -> ~2.4 frames/s, ~0.4 s behind.
                  Use it for videos without a phone: detection reacts sooner and catches short moments.
-  --cv-no-hands: skip hands-off-wheel detection and wheel calibration
+  --cv-no-hands: skip hands-off-wheel detection and wheel calibration (ALWAYS used here: faster start)
   --cv-stride N:  analyze at most every Nth frame (default 6 = at most 5 per second at 30 fps).
                   Lower values only help on a faster machine; higher values save CPU.
   Keep the drive after video:   add  --cv-keep-drive
@@ -38,7 +38,7 @@ CHANGE THE VIDEO (only terminal 2 = CVEngine)
 ---------------------------------------------
 bridge> end        (only if a drive is still running)
 bridge> quit
-.\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\OTHER_VIDEO.mp4
+.\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\OTHER_VIDEO.mp4 --cv-no-hands
   (the prompt must end with \RivianHackatonEngine> ; press the Up arrow to get the last command back)
 Then wait for "CV: ready" and unlock in the app. Backend and emulator keep running.
 List the videos:  dir CVEngine\videos\*.mp4
@@ -47,8 +47,10 @@ List the videos:  dir CVEngine\videos\*.mp4
 TERMINAL 3 = APP  (car emulator + app)
 --------------------------------------
 $sdk = "$env:LOCALAPPDATA\Android\Sdk"
-Start-Process "$sdk\emulator\emulator.exe" -ArgumentList "-avd", "Automotive_Large_Portrait", "-no-snapshot-load"
+Start-Process "$sdk\emulator\emulator.exe" -ArgumentList "-avd", "Automotive_Large_Portrait", "-no-snapshot-load", "-gpu", "host"
   (-no-snapshot-load = cold boot: the app never comes back frozen in an old drive; takes a bit longer)
+  (-gpu host = draw the Android screen on the NVIDIA GPU. Without it the emulator draws on the CPU
+   and CVEngine gets ~5x slower during a drive, so detections and the score are lost)
 
   (wait until the car home screen is shown, then:)
 

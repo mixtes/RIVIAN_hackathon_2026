@@ -18,10 +18,10 @@ def _report(engine):
     game.process_event("PHONE_CALL", True, 1010.0)
     game.process_event("PHONE_CALL", False, 1018.0)       # 8 s, grace 1: 1.0 * (1+7)^1.5 = 22.63
     game.process_event("EYES_OFF_ROAD", True, 1030.0)
-    game.process_event("EYES_OFF_ROAD", False, 1030.3)    # under 2 s grace: ignored
+    game.process_event("EYES_OFF_ROAD", False, 1030.3)    # 0.3 s, grace 0: 0.6 * (1+0.3)^1.5 = 0.89
     game.process_event("EYES_OFF_ROAD", True, 1045.0)
-    game.process_event("EYES_OFF_ROAD", False, 1048.0)    # 3 s, grace 2: 0.6 * (1+1)^1.5 = 1.70
-    # total 24.32, scaled by 30 s / 120 s drive = 6.08 -> score 100 * 2^(-6.08/30) = 86.89
+    game.process_event("EYES_OFF_ROAD", False, 1048.0)    # 3 s, grace 0: 0.6 * (1+3)^1.5 = 4.80
+    # total 28.32, scaled by 30 s / 120 s drive = 7.08 -> score 100 * 2^(-7.08/30) = 84.91
     return game, game.end_drive(1120.0)
 
 
@@ -34,22 +34,23 @@ def test_drive_report_mapping(engine) -> None:
         is_penalized=lambda o: game.score_occurrence(o) > 0,
     ).model_dump(mode="json")
 
-    assert result["score"] == 86.89
+    assert result["score"] == 84.91
     assert result["started_at"] == "2026-11-06T08:00:00.000Z"
     assert result["ended_at"] == "2026-11-06T08:02:00.000Z"
     assert result["distance_km"] is None
     mistakes = {m["type"]: m for m in result["mistakes"]}
     assert mistakes["PHONE_CALL"] == {"type": "PHONE_CALL", "count": 1,
                                       "total_duration_s": 8.0, "max_duration_s": 8.0}
-    assert mistakes["EYES_OFF_ROAD"]["count"] == 1   # the 0.3 s glance is under grace
-    assert mistakes["EYES_OFF_ROAD"]["total_duration_s"] == 3.0
+    assert mistakes["EYES_OFF_ROAD"]["count"] == 2   # the 0.3 s glance counts too (no grace)
+    assert mistakes["EYES_OFF_ROAD"]["total_duration_s"] == 3.3
     # events = penalized occurrences only, in time order, wall-clock
     assert result["events"] == [
         {"type": "PHONE_CALL", "started_at": "2026-11-06T08:00:10.000Z", "duration_s": 8.0},
+        {"type": "EYES_OFF_ROAD", "started_at": "2026-11-06T08:00:30.000Z", "duration_s": 0.3},
         {"type": "EYES_OFF_ROAD", "started_at": "2026-11-06T08:00:45.000Z", "duration_s": 3.0},
     ]
     assert {k: v for k, v in result["extra"]["penalties"].items() if v} == {
-        "EYES_OFF_ROAD": 0.91, "PHONE_CALL": 12.19}     # points lost, sum = 100 - score
+        "EYES_OFF_ROAD": 3.03, "PHONE_CALL": 12.06}     # points lost, sum = 100 - score
     assert result["extra"]["end_reason"] == "MANUAL"
 
 

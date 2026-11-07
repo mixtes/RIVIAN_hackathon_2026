@@ -111,11 +111,15 @@ def load_events_from_csv(path: str) -> List[dict]:
 # (phone, gaze_away, hands_off). TODO: tune the others.
 DEFAULT_SCORE_CONFIG: Dict[str, ActionScoreConfig] = {
     "PHONE_CALL": ActionScoreConfig(weight=1.0, grace_seconds=1.0),        # STUB: not detected yet
-    "EYES_OFF_ROAD": ActionScoreConfig(weight=0.6, grace_seconds=2.0),
+    # No grace: every look-away CVEngine reports costs points (its flicker filter already needs ~0.3 s),
+    # also the short ones that don't alert (AlertEngine alerts from 1 s). Longer ones cost much more.
+    "EYES_OFF_ROAD": ActionScoreConfig(weight=0.6, grace_seconds=0.0),
     "EYES_CLOSED": ActionScoreConfig(weight=1.5, grace_seconds=0.5),       # STUB: not detected yet
     "YAWN": ActionScoreConfig(weight=0.1, grace_seconds=0.0),              # CVEngine bit 0x08 (yawn.py)
     "HANDS_OFF_WHEEL": ActionScoreConfig(weight=0.3, grace_seconds=3.0),   # both hands off
-    "PHONE_USE": ActionScoreConfig(weight=1.0, grace_seconds=1.0),         # CVEngine bit 0x10 (already ~1 s confirmation delay in CV)
+    # CVEngine bit 0x10. CV only sets it after ~1 s of phone use (its confirmation), so no extra grace here:
+    # every confirmed phone use costs points, and alerts at once (AlertEngine VISUAL at 0 s).
+    "PHONE_USE": ActionScoreConfig(weight=1.0, grace_seconds=0.0),
     "EATING_DRINKING": ActionScoreConfig(weight=0.2, grace_seconds=3.0),   # STUB: not detected yet
     "SMOKING": ActionScoreConfig(weight=0.2, grace_seconds=3.0),           # STUB: not detected yet
 }
@@ -272,9 +276,13 @@ class GameEngine:
         return self.occurrence_penalty(occ.action, occ.duration)
 
     def occurrence_penalty(self, action: str, effective_duration: float) -> float:
-        """0 below the grace period, then weight * (1 + excess) ** EXPONENT."""
+        """0 below the grace period, then weight * (1 + excess) ** EXPONENT.
+
+        An occurrence with no effective time (fully covered by a more severe action) costs
+        nothing, also with grace 0.
+        """
         cfg = self.config.get(normalize_action(action))
-        if cfg is None:
+        if cfg is None or effective_duration <= 0.0:
             return 0.0
         excess = effective_duration - cfg.grace_seconds
         if excess < 0:

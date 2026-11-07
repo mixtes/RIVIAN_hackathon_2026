@@ -9,6 +9,7 @@ import logging
 import random
 import signal
 import sys
+from pathlib import Path
 
 from . import __version__
 from .clock import SystemClock
@@ -19,6 +20,10 @@ from .server import BridgeServer
 from .simulator import FAST_SPEED, SCENARIOS, Simulator
 
 log = logging.getLogger("simulated_game_engine")
+
+
+# simulated_game_engine/logs/bridge.log (gitignored: *.log)
+DEFAULT_LOG_FILE = Path(__file__).resolve().parents[2] / "logs" / "bridge.log"
 
 
 def default_engine_version(engine_version: str | None) -> str:
@@ -80,6 +85,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="also play the video for a drive the app resumes on reconnect (by default "
                          "only drives started after the bridge started play it)")
     ap.add_argument("-v", "--verbose", action="store_true", help="log full JSON messages")
+    ap.add_argument("--log-file", default=str(DEFAULT_LOG_FILE),
+                    help=f"also write the log to this file, replaced on every start "
+                         f"(default {DEFAULT_LOG_FILE}; '' = no file)")
     return ap.parse_args(argv)
 
 
@@ -159,9 +167,15 @@ async def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if args.log_file:
+        log_path = Path(args.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, mode="w", encoding="utf-8"))
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S",
+        handlers=handlers,
     )
     logging.getLogger("websockets").setLevel(logging.WARNING)
     with contextlib.suppress(KeyboardInterrupt):
