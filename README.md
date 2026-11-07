@@ -2,6 +2,8 @@
 
 A driver-safety scoring system for the car. A driver-monitoring **engine** detects risky behaviour (phone call, eyes off road, …) and raises escalating alerts. At the end of every drive it produces a **score from 0 to 100**. The **car app** shows the alerts and results. The **backend** stores drives and computes personal stats and leaderboards.
 
+**Model benchmark overview:** Open [`benchmarks.html`](benchmarks.html) in a browser for a visual, Serbian-language comparison of model speed and phone-detection tradeoffs. The single page works offline, requires no installation, and includes methodology, sources, and a print/PDF option.
+
 ```
  ┌──────────────────────────┐  WebSocket :8765   ┌─────────────────────────────┐  HTTP :8000   ┌─────────────────────┐
  │ simulated_game_engine/   │ ─────────────────► │ car_frontend/               │ ────────────► │ backend/            │
