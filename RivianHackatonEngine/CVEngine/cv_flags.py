@@ -6,13 +6,14 @@ Bit layout, most significant bit first; a higher bit is a higher priority:
   0x40 looked off the road  (head turned away, see eyes_off_road.py)
   0x20 hands off the steering wheel
   0x10 distracted by mobile phone (live_phone.PhoneMonitor: already confirmed, not passed through FlickerFilter)
-  0x0F reserved, always sent as 0
+  0x08 yawning (yawn.py: mouth opened wide, then covered by a hand; needs --head face)
+  0x07 reserved, always sent as 0
 A bit is a STATE ("the condition is present in this frame"), lightly smoothed here; no duration hold is applied:
 the engines own every duration threshold. 0 never proves absence: when nothing can be observed the bit is 0.
 """
 
-ASLEEP, OFF_ROAD, HANDS_OFF, PHONE = 0x80, 0x40, 0x20, 0x10
-RESERVED = 0x0F
+ASLEEP, OFF_ROAD, HANDS_OFF, PHONE, YAWN = 0x80, 0x40, 0x20, 0x10, 0x08
+RESERVED = 0x07
 
 
 def format_record(timestamp, flags, occupants=None):
@@ -23,10 +24,10 @@ def format_record(timestamp, flags, occupants=None):
     return f'{timestamp:.3f},{int(flags) & 0xFF},{max(int(occupants), 0)}'
 
 
-def pack_flags(asleep=False, off_road=False, hands_off=False, phone=False):
-    """-> int 0..255. The reserved low nibble is always 0."""
+def pack_flags(asleep=False, off_road=False, hands_off=False, phone=False, yawn=False):
+    """-> int 0..255. The reserved low 3 bits are always 0."""
     return ((ASLEEP if asleep else 0) | (OFF_ROAD if off_road else 0)
-            | (HANDS_OFF if hands_off else 0) | (PHONE if phone else 0))
+            | (HANDS_OFF if hands_off else 0) | (PHONE if phone else 0) | (YAWN if yawn else 0))
 
 
 class FlickerFilter:

@@ -37,6 +37,9 @@ class FaceMeasure:
     blink: float                    # 0..1 average of eyeBlinkLeft/Right; near 1 = eyes closed
     ear_l: Optional[float] = None   # eye aspect ratio from the eyelid landmarks (about 0.25-0.4 open, <0.1 closed)
     ear_r: Optional[float] = None
+    jaw_open: Optional[float] = None    # 0..1 jawOpen blendshape: mouth opening (yawn ~0.3-0.4+, closed ~0)
+    lips: Optional[tuple] = None        # (x, y) frame pixels: centre of the lips (inner lips + mouth corners)
+    face_w: Optional[float] = None      # face width in frame pixels (landmark extent), the scale for distances
 
 
 def ensure_model(path=MODEL_PATH):
@@ -58,6 +61,7 @@ def load_landmarker(path=None):
 # MediaPipe face-mesh eyelid points: corner, upper lid x2, corner, lower lid x2 (EAR = lid gaps / eye width)
 EYE_R = (33, 160, 158, 133, 153, 144)
 EYE_L = (362, 385, 387, 263, 373, 380)
+LIPS = (13, 14, 78, 308)            # inner upper / lower lip, mouth corners
 
 
 def eye_aspect_ratio(pts, idx):
@@ -118,6 +122,12 @@ class FaceHead:
                 else (None, None)
         except (TypeError, AttributeError, IndexError):
             ear_l = ear_r = None
+        try:                                  # mouth for the yawn rule (yawn.py); same: never break the head angles
+            arr = np.asarray(pts, float)
+            cx, cy = arr[list(LIPS)].mean(axis=0)
+            lips, face_w = (float(cx + x0), float(cy + y0)), float(np.ptp(arr[:, 0]))
+        except (NameError, TypeError, IndexError, ValueError):
+            lips = face_w = None
         return FaceMeasure(yaw, pitch, roll, mean('eyeLookDownLeft', 'eyeLookDownRight'),
                            mean('eyeLookUpLeft', 'eyeLookUpRight'), mean('eyeBlinkLeft', 'eyeBlinkRight'),
-                           ear_l, ear_r)
+                           ear_l, ear_r, scores.get('jawOpen'), lips, face_w)

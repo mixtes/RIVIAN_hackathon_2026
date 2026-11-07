@@ -351,9 +351,9 @@ class FlickerFilterTests(unittest.TestCase):
 
 class FlagByteTests(unittest.TestCase):
     def test_layout_matches_the_interface_document(self):
-        self.assertEqual((cv_flags.ASLEEP, cv_flags.OFF_ROAD, cv_flags.HANDS_OFF, cv_flags.PHONE),
-                         (0x80, 0x40, 0x20, 0x10))
-        self.assertEqual(cv_flags.RESERVED, 0x0F)
+        self.assertEqual((cv_flags.ASLEEP, cv_flags.OFF_ROAD, cv_flags.HANDS_OFF, cv_flags.PHONE, cv_flags.YAWN),
+                         (0x80, 0x40, 0x20, 0x10, 0x08))
+        self.assertEqual(cv_flags.RESERVED, 0x07)
 
     def test_stream_record_format(self):
         self.assertEqual(cv_flags.format_record(12.3456, 0x60), '12.346,96')

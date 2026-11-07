@@ -31,7 +31,7 @@ Dispatch = Callable[[Iterable[p.Message]], Awaitable[None]]
 
 # The CVEngine byte, highest bit first (CV_ENGINE_INTERFACE.md section 3); only used for logging.
 CV_BITS = ((0x80, "EYES_CLOSED"), (0x40, "EYES_OFF_ROAD"), (0x20, "HANDS_OFF_WHEEL"),
-           (0x10, "PHONE_USE"))
+           (0x10, "PHONE_USE"), (0x08, "YAWN"))
 
 
 # stderr lines from live.py that are logged at DEBUG only.
@@ -221,7 +221,7 @@ class CvSource:
             flags = parse_record(raw.decode("utf-8", "replace"))
             if flags is None or not self._same_session(session_id):
                 continue
-            masked = flags & 0xF0
+            masked = flags & 0xF8
             if masked != prev:
                 for bit, action in CV_BITS:
                     if (masked ^ prev) & bit:

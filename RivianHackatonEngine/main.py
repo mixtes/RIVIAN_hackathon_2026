@@ -29,12 +29,13 @@ __version__ = "0.4.0"
 
 # The CVEngine byte (CV_ENGINE_INTERFACE.md section 3), highest bit (= priority) first.
 CV_FLAG_ACTIONS: Tuple[Tuple[int, str], ...] = (
-    (0x80, "EYES_CLOSED"),       # fell asleep (not produced by CVEngine yet)
+    (0x80, "EYES_CLOSED"),       # fell asleep: eyes closed or slumped (eyes_closed.py, slump.py)
     (0x40, "EYES_OFF_ROAD"),     # looked off the road
     (0x20, "HANDS_OFF_WHEEL"),   # hands off the steering wheel
     (0x10, "PHONE_USE"),         # phone at the ear or in hand (live_phone.PhoneMonitor)
+    (0x08, "YAWN"),              # yawning (yawn.py)
 )
-CV_FLAGS_MASK = 0xF0             # the low nibble is reserved and ignored
+CV_FLAGS_MASK = 0xF8             # the low 3 bits are reserved and ignored
 
 # Gap rule (CV_ENGINE_INTERFACE.md section 8.1): if no record arrives for longer
 # than this, the CV stream counts as interrupted and every open action is closed
@@ -44,8 +45,8 @@ CV_FLAGS_MASK = 0xF0             # the low nibble is reserved and ignored
 CV_GAP_SECONDS = 2.0
 
 # The subset of the 8 canonical actions that real detection (CVEngine) emits today:
-# live.py sets bit 0x40 (eyes_off_road.py), bit 0x20 (hands off the wheel) and bit 0x10 (phone use).
-DETECTED_ACTIONS = ("EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_USE")
+# live.py sets bit 0x80 (asleep), 0x40 (eyes_off_road.py), 0x20 (hands off the wheel), 0x10 (phone use) and 0x08 (yawn).
+DETECTED_ACTIONS = ("EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_USE", "YAWN")
 
 __all__ = ["SafetySystem", "Alert", "AlertClear", "AlertLevel", "AlertUpdate",
            "DriveReport", "DETECTED_ACTIONS", "CV_FLAG_ACTIONS", "CV_FLAGS_MASK",

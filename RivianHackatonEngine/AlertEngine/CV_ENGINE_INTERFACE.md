@@ -54,11 +54,12 @@ Most significant bit first. **A higher bit is a higher priority**, so a plain nu
 | 6 | `0x40` | looked off the road | `EYES_OFF_ROAD` | **not implemented yet** |
 | 5 | `0x20` | hands off the steering wheel | `HANDS_OFF_WHEEL` | **implemented** |
 | 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | live (`live_phone.PhoneMonitor` in `live.py`); confirmed state: about 1 s to switch on, about 3 s to switch off |
-| 3 to 0 | `0x0F` | reserved | none | always sent as 0 |
+| 3 | `0x08` | yawning: the mouth opens wide, then a hand covers it (or it stays wide open >= 1.5 s) | `YAWN` | live (`yawn.py`, needs `--head face`; `--no-yawn` turns it off). A hand at the mouth alone is not a yawn (chin rest, smoking, eating look the same) |
+| 2 to 0 | `0x07` | reserved | none | always sent as 0 |
 
 Notes:
 - **Phone:** one bit covers both "phone at the ear" and "phone in hand". The engines see it as `PHONE_USE`. `PHONE_CALL` stays available for the simulator, but CVEngine never produces it through this interface. The ear-versus-hand distinction is lost on purpose.
-- **Reserved bits:** CVEngine sends them as 0. The engine side **masks them off and ignores them** (`flags & 0xF0`), so a future bit never breaks the old engine and a bad value never raises.
+- **Reserved bits:** CVEngine sends them as 0. The engine side **masks them off and ignores them** (`flags & 0xF8`), so a future bit never breaks the old engine and a bad value never raises.
 - `YAWN`, `EATING_DRINKING` and `SMOKING` have no bit. They remain simulator-only stubs.
 - Examples: `0x20` = hands off only. `0x30` = hands off and phone. `0x00` = nothing detected.
 
@@ -93,7 +94,7 @@ def on_frame(self, timestamp: float, flags: int, occupants: Optional[int] = None
 Rules:
 
 1. **Validate, never raise.** If `flags` is not an `int` in `0..255` (a `bool` doesn't count), or `timestamp` is not a finite number, or `timestamp` is **smaller than the previous record's**, ignore the record and return `[]`. `occupants` is optional: if it is `None`, not an `int` in `0..15`, or a `bool`, the record is **not** rejected. The last valid count is kept and the flags are processed as usual.
-2. **Mask:** `flags &= 0xF0`.
+2. **Mask:** `flags &= 0xF8`.
 3. **Edge detection per bit.** Keep `previous_flags` (it is `0` after `start_drive`, after `end_drive` and at construction). For each bit whose value differs from `previous_flags`:
    - `0 → 1`: `on_event(ACTION, True, timestamp)`
    - `1 → 0`: `on_event(ACTION, False, timestamp)`
@@ -112,8 +113,8 @@ Rules:
 - **Flicker is mostly gone, not entirely.** A bit that drops to 0 for one analyzed frame ends the occurrence and the next 1 starts a new one with a new `alert_id`. If this happens in practice, the right fix is a longer smoothing window in CVEngine, not a hysteresis inside the AlertEngine. Tell the CVEngine owner.
 - **No suppression by priority.** If bits 5 and 4 are both 1, you report both alerts (`CAR_FRONTEND_INTERFACE.md` §5.1 rule 7). Priority is only the call order of §5.
 - **Latched `EYES_CLOSED` (bit 7).** When the bit goes `1 → 0`, the latched alert stays until the driver presses Dismiss, as already specified. A bit that is `1` again after a dismiss is a new occurrence (rule 9 there). Nothing here changes that.
-- **Not implemented yet.** Bits 7 and 6 are never set today. Their configs (`EYES_CLOSED`, `EYES_OFF_ROAD`) must still work, because the simulator can trigger them and they will be wired in later.
-- **`DETECTED_ACTIONS`** (`main.py`): the actions CVEngine really produces. Today: `EYES_OFF_ROAD`, `HANDS_OFF_WHEEL` and `PHONE_USE`; `EYES_CLOSED` later.
+- **All five bits are produced live** (7, 6, 5, 4, 3). The configs of the other actions must still work, because the simulator can trigger them.
+- **`DETECTED_ACTIONS`** (`main.py`): the actions CVEngine really produces. Today: `EYES_CLOSED`, `EYES_OFF_ROAD`, `HANDS_OFF_WHEEL`, `PHONE_USE` and `YAWN`.
 
 ---
 
@@ -126,7 +127,7 @@ Timestamps are seconds. `S` is a fresh `SafetySystem` after `start_drive(0.0)`.
 3. Then `on_frame(1.0, 0x00)` → exactly one `on_event("HANDS_OFF_WHEEL", False, 1.0)`.
 4. `on_frame(0.0, 0x30)` → both `HANDS_OFF_WHEEL` and `PHONE_USE` start. Bit 4 produces `PHONE_USE`, never `PHONE_CALL`.
 5. `0x20 → 0x10` in one record → the `HANDS_OFF_WHEEL` end is processed **before** the `PHONE_USE` start.
-6. `on_frame(0.0, 0x0F)` and `on_frame(0.1, 0x2F)` → the reserved bits are ignored. The second behaves exactly like `0x20`.
+6. `on_frame(0.0, 0x07)` and `on_frame(0.1, 0x27)` → the reserved bits are ignored. The second behaves exactly like `0x20`.
 7. `on_frame(0.0, 256)`, `on_frame(0.0, -1)`, `on_frame(0.0, "x")`, `on_frame(0.0, None)`, `on_frame(0.0, True)`, `on_frame(float("nan"), 0x20)` → `[]`, no exception, no state change.
 8. `on_frame(5.0, 0x20)` then `on_frame(4.0, 0x00)` → the second record is ignored, and the action is still active.
 9. `on_frame(0.0, 0x80)` then `on_frame(1.0, 0x00)` → `EYES_CLOSED` starts and ends. With the latched config, the alert stays after the `False` until `dismiss`.

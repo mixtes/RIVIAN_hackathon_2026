@@ -157,7 +157,7 @@ DEFAULT_ALERT_CONFIG: Dict[str, ActionAlertConfig] = {
         EscalationStep(2.5, AlertLevel.HAPTIC, "Look at the road!"),
         EscalationStep(4.0, AlertLevel.CRITICAL, "Danger! Eyes off the road!"),
     ]),
-    "YAWN": ActionAlertConfig(steps=[  # STUB: not detected yet
+    "YAWN": ActionAlertConfig(steps=[  # CVEngine bit 0x08 (yawn.py)
         EscalationStep(0.0, AlertLevel.VISUAL, "You seem tired. Consider a break."),
     ]),
     "EATING_DRINKING": ActionAlertConfig(steps=[  # STUB: not detected yet

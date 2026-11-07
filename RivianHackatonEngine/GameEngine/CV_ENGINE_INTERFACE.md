@@ -54,11 +54,12 @@ Most significant bit first. **A higher bit is a higher priority**, so a plain nu
 | 6 | `0x40` | looked off the road | `EYES_OFF_ROAD` | **not implemented yet** |
 | 5 | `0x20` | hands off the steering wheel | `HANDS_OFF_WHEEL` | **implemented** |
 | 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | live (`live_phone.PhoneMonitor` in `live.py`); confirmed state: about 1 s to switch on, about 3 s to switch off |
-| 3 to 0 | `0x0F` | reserved | none | always sent as 0 |
+| 3 | `0x08` | yawning: the mouth opens wide, then a hand covers it (or it stays wide open >= 1.5 s) | `YAWN` | live (`yawn.py`, needs `--head face`; `--no-yawn` turns it off). A hand at the mouth alone is not a yawn (chin rest, smoking, eating look the same) |
+| 2 to 0 | `0x07` | reserved | none | always sent as 0 |
 
 Notes:
 - **Phone:** one bit covers both "phone at the ear" and "phone in hand". The engines see it as `PHONE_USE`. `PHONE_CALL` stays available for the simulator, but CVEngine never produces it through this interface. The ear-versus-hand distinction is lost on purpose.
-- **Reserved bits:** CVEngine sends them as 0. The engine side **masks them off and ignores them** (`flags & 0xF0`), so a future bit never breaks the old engine and a bad value never raises.
+- **Reserved bits:** CVEngine sends them as 0. The engine side **masks them off and ignores them** (`flags & 0xF8`), so a future bit never breaks the old engine and a bad value never raises.
 - `YAWN`, `EATING_DRINKING` and `SMOKING` have no bit. They remain simulator-only stubs.
 - Examples: `0x20` = hands off only. `0x30` = hands off and phone. `0x00` = nothing detected.
 
@@ -93,7 +94,7 @@ def on_frame(self, timestamp: float, flags: int, occupants: Optional[int] = None
 Rules:
 
 1. **Validate, never raise.** If `flags` is not an `int` in `0..255` (a `bool` doesn't count), or `timestamp` is not a finite number, or `timestamp` is **smaller than the previous record's**, ignore the record and return `[]`. `occupants` is optional: if it is `None`, not an `int` in `0..15`, or a `bool`, the record is **not** rejected. The last valid count is kept and the flags are processed as usual.
-2. **Mask:** `flags &= 0xF0`.
+2. **Mask:** `flags &= 0xF8`.
 3. **Edge detection per bit.** Keep `previous_flags` (it is `0` after `start_drive`, after `end_drive` and at construction). For each bit whose value differs from `previous_flags`:
    - `0 → 1`: `on_event(ACTION, True, timestamp)`
    - `1 → 0`: `on_event(ACTION, False, timestamp)`
@@ -115,7 +116,7 @@ Rules:
 - **Simultaneous bits: only the most severe one is penalized** (overlap rule, `GameEngine.PRIORITY`: `EYES_CLOSED > PHONE_CALL > PHONE_USE > EYES_OFF_ROAD > HANDS_OFF_WHEEL > EATING_DRINKING > SMOKING > YAWN`). `0x30` still opens two occurrences (`HANDS_OFF_WHEEL` and `PHONE_USE`), and both are in `occurrences`. But each occurrence is penalized only for the seconds that no higher-priority occurrence covers, so here `PHONE_USE` is penalized and the fully covered `HANDS_OFF_WHEEL` costs nothing (`count == 0`, `score_occurrence == 0`). This scoring priority is separate from the bit order in §5, which only orders the updates.
 - **A bit still `1` at the end.** `end_drive(ts)` closes it at `ts`, as already specified.
 - **Danger: a stream that stops while a bit is `1`.** If CVEngine dies or the camera drops with a bit set, the occurrence stays open and is scored up to `end_drive`, which can be the rest of the whole drive. This is the main reason for the gap rule in §8.1. For the score it matters more than for the alerts.
-- **Not implemented yet.** Bits 7 and 6 are never set today. `EYES_CLOSED` and `EYES_OFF_ROAD` scoring must still work, because the simulator can trigger them and they will be wired in later.
+- **All five bits are produced live** (7, 6, 5, 4, 3). Scoring of the other actions must still work, because the simulator can trigger them.
 - **Dismissing an alert never changes the score** (`CAR_FRONTEND_INTERFACE.md` §3.1 rule 6). It has no connection to this interface.
 - **Offline replay.** `GameEngine.run_from_csv` and its event CSV are unchanged. If a byte-per-frame file is ever replayed offline, apply the edge rules of §5 first and feed the resulting events.
 
@@ -128,7 +129,7 @@ Timestamps are seconds. `S` is a fresh `SafetySystem` after `start_drive(0.0)`. 
 1. Records `(1.0, 0x20)`, `(1.2, 0x20)`, ..., `(4.0, 0x20)`, `(4.2, 0x00)`, then `end_drive(10.0)` → one `HANDS_OFF_WHEEL` occurrence from 1.0 to 4.2 (duration 3.2 s). `actions["HANDS_OFF_WHEEL"].count == 1`.
 2. Records `(1.0, 0x20)`, `(1.5, 0x00)` → the occurrence (0.5 s) is in `occurrences`, but `count == 0` and `score_occurrence(occ) == 0`.
 3. `(0.0, 0x30)` then `(5.0, 0x00)` → both `HANDS_OFF_WHEEL` and `PHONE_USE` have an occurrence from 0.0 to 5.0. Only `PHONE_USE` is penalized (overlap rule, §6): `HANDS_OFF_WHEEL` and `PHONE_CALL` have `count == 0`.
-4. `0x0F`, `0x2F`, `256`, `-1`, `"x"`, `None`, `True`, a NaN timestamp → the invalid ones leave no occurrence behind, nothing raises. `0x2F` is scored exactly like `0x20`.
+4. `0x07`, `0x27`, `256`, `-1`, `"x"`, `None`, `True`, a NaN timestamp → the invalid ones leave no occurrence behind, nothing raises. `0x27` is scored exactly like `0x20`.
 5. `(5.0, 0x20)` then `(4.0, 0x00)` (timestamp goes backwards) → the second record is ignored, and the occurrence is still open.
 6. `(2.0, 0x20)` as the last record, then `end_drive(10.0)` → the occurrence is closed at 10.0 (duration 8.0).
 7. `(2.0, 0x20)`, then a record at `(30.0, 0x20)` → **if the gap rule of §8.1 is adopted**, the first occurrence is closed at 2.0 and a new one starts at 30.0. Otherwise it is one occurrence from 2.0 on. Write this test together with that decision.

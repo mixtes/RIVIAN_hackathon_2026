@@ -100,9 +100,9 @@ class AlertSideTests(unittest.TestCase):
 
     def test_6_reserved_bits_ignored(self):
         s = _system()
-        self.assertEqual(s.on_frame(0.0, 0x0F), [])
+        self.assertEqual(s.on_frame(0.0, 0x07), [])
         self.assertEqual(s.calls, [])
-        s.on_frame(0.1, 0x2F)
+        s.on_frame(0.1, 0x27)
         self.assertEqual(s.calls, [("HANDS_OFF_WHEEL", True, 0.1)])
 
     def test_7_invalid_records_ignored(self):
@@ -216,12 +216,12 @@ class GameSideTests(unittest.TestCase):
 
     def test_4_invalid_and_reserved(self):
         a, b = _system(), _system()
-        for ts, flags in [(0.0, 0x0F), (0.1, 256), (0.1, -1), (0.1, "x"), (0.1, None),
+        for ts, flags in [(0.0, 0x07), (0.1, 256), (0.1, -1), (0.1, "x"), (0.1, None),
                           (0.1, True), (float("nan"), 0x20)]:
             a.on_frame(ts, flags)
         self.assertEqual(a.end_drive(1.0).occurrences, [])
         a, b = _system(), _system()
-        a.on_frame(1.0, 0x2F)
+        a.on_frame(1.0, 0x27)
         a.on_frame(4.0, 0x00)
         b.on_frame(1.0, 0x20)
         b.on_frame(4.0, 0x00)
@@ -313,7 +313,13 @@ class ReplayTests(unittest.TestCase):
     def test_detected_actions_match_cv_bits(self):
         bit_actions = {a for _, a in main.CV_FLAG_ACTIONS}
         self.assertTrue(set(main.DETECTED_ACTIONS) <= bit_actions)
-        self.assertEqual(set(main.DETECTED_ACTIONS), {"EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_USE"})
+        self.assertEqual(set(main.DETECTED_ACTIONS), {"EYES_CLOSED", "EYES_OFF_ROAD", "HANDS_OFF_WHEEL", "PHONE_USE", "YAWN"})
+
+    def test_yawn_bit(self):
+        s = _system()
+        s.on_frame(0.0, 0x08)
+        s.on_frame(1.0, 0x00)
+        self.assertEqual(s.calls, [("YAWN", True, 0.0), ("YAWN", False, 1.0)])
 
     def test_read_both_live_py_formats(self):
         stream = ["0.000,0", "0.200,32", "", "garbage", "0.400,96"]

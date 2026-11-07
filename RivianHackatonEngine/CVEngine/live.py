@@ -18,6 +18,7 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
                 confirmed: ~1 s to switch on, ~3 s to switch off). CSV: frame,time_s,flags,hands_off,eyes_off_road,phone
   --no-hands    skip hands-off-wheel detection and wheel calibration (bit 0x20 stays 0; faster)
   --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
+  --no-yawn     skip yawn detection (bit 0x08: mouth opened wide, then covered by a hand; yawn.py; needs --head face)
   --play        show the plain video (every frame, no overlays) in a window at its real speed; q closes it and stops.
                 A player thread reads and shows the source; the analysis takes the newest frame (at least --stride
                 frames after the previous one) and skips frames it cannot keep up with, so the video never slows down
@@ -29,7 +30,7 @@ import argparse, json, sys, threading, time
 import cv2, numpy as np
 import auto_wheel, rules
 import hands_pose
-import cv_flags, eyes_off_road, eyes_closed, occupancy, slump
+import cv_flags, eyes_off_road, eyes_closed, occupancy, slump, yawn
 
 CASE = 'HANDS_OFF_THE_WHEEL'
 HOLD_S = 1.0        # both hands observed away for this long -> confirmed
@@ -275,6 +276,7 @@ def main():
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
     ap.add_argument('--no-phone', action='store_true', help='do not run phone detection (bit 0x10 stays 0)')
+    ap.add_argument('--no-yawn', action='store_true', help='do not run yawn detection (bit 0x08 stays 0)')
     ap.add_argument('--no-hands', action='store_true',
                     help='do not run hands-off-wheel detection or wheel calibration (bit 0x20 stays 0); faster, and '
                          'other detections start on the first frame')
@@ -313,6 +315,19 @@ def main():
         phone = PhoneMonitor(dark_phone_model=args.dark_phone_model or PhoneMonitor.DEFAULT_DARK_MODEL,
                              device=device)
         print(f'phone detection on (dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
+    yawner = hand_finder = None
+    if not args.no_yawn and faces is not None:
+        yawner = yawn.YawnDetector()
+        if phone is not None and phone.finder is not None:
+            hand_finder = phone.finder                       # share the phone's MediaPipe hand finder
+        else:
+            try:
+                from hands import HandFinder
+                hand_finder = HandFinder()
+            except ImportError:
+                hand_finder = None                           # without hands only uncovered yawns are found
+    elif not args.no_yawn:
+        print('yawn detection off: it needs --head face', flush=True)
     cap, is_cam = open_source(args.source)
     if args.wait:
         if cal is not None:
@@ -333,7 +348,7 @@ def main():
     ocsv = open(args.output, 'w') if args.output else None
     bcsv = open(args.flags, 'w') if args.flags else None
     if bcsv:
-        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants,phone\n')
+        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants,phone,yawn\n')
     head = eyes_off_road.HeadPoseDetector()
     eyes = eyes_closed.EyeClosureDetector()
     slumper = slump.SlumpDetector()
@@ -423,8 +438,12 @@ def main():
             asleep = bool(sleep_bit) and not args.no_sleep_bit
             # PHONE_USE is already confirmed/debounced by phone_events.EventTracker: no FlickerFilter on top.
             phone_bit = phone.update(t, frame, kp) if phone is not None else 0
+            # Yawn: confirmed by its own sequence (mouth wide open, then a hand covers it); hands only when needed.
+            yawn_state = yawner.update(t, face, lambda: yawn.hand_points(hand_finder.find(frame, kp))
+                                       if hand_finder is not None and kp is not None else []) if yawner else None
+            yawn_bit = yawn.YawnDetector.raw_bit(yawn_state) if yawn_state else 0
             flags = cv_flags.pack_flags(asleep=asleep, hands_off=bool(hands_bit), off_road=bool(head_bit),
-                                        phone=bool(phone_bit))
+                                        phone=bool(phone_bit), yawn=bool(yawn_bit))
             if args.stream:
                 try:
                     print(cv_flags.format_record(t, flags, occ.count), file=stream_out, flush=True)
@@ -440,7 +459,7 @@ def main():
                 ocsv.write(f'{frame_no - 1},{t:.3f},{off},{unk}\n')
                 ocsv.flush()
             if bcsv:
-                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit},{occ.count},{phone_bit}\n')
+                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit},{occ.count},{phone_bit},{yawn_bit}\n')
                 bcsv.flush()
             if fcsv:
                 cells = []
@@ -515,7 +534,7 @@ def main():
                     head_text += f'  blink {obs.blink:.2f}'
                 cv2.putText(view, head_text, (30, 240), 0, 1.3, head_color, 4)
                 cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit} '
-                                  f'asleep={int(bool(flags & cv_flags.ASLEEP))} phone={phone_bit}',
+                                  f'asleep={int(bool(flags & cv_flags.ASLEEP))} phone={phone_bit} yawn={yawn_bit}',
                             (30, 320), 0, 1.5, (0, 0, 255) if flags else (200, 200, 200), 4)
                 zone_color = {'driver': (255, 200, 0), 'front': (0, 200, 255), 'rear': (255, 0, 255)}
                 for person in occ.people:
@@ -557,6 +576,11 @@ def main():
                         cv2.putText(view, f'phone {p[4]:.2f}', (int(p[0]), int(p[1]) - 10), 0, 1.2, col, 3)
                     cv2.putText(view, f'PHONE {"USE" if phone_bit else "-"}  evidence {ev.state} ({ev.reason})',
                                 (30, 660), 0, 1.3, (0, 0, 255) if phone_bit else (200, 200, 200), 4)
+                if yawn_state is not None:
+                    jaw = '-' if yawn_state.jaw_open is None else f'{yawn_state.jaw_open:.2f}'
+                    cv2.putText(view, f'YAWN {"YES" if yawn_bit else "-"}  jawOpen {jaw}'
+                                      f'{"  " + yawn_state.reason if yawn_state.reason else ""}',
+                                (30, 740), 0, 1.3, (0, 0, 255) if yawn_bit else (200, 200, 200), 4)
                 if kp is not None and obs.yaw is not None:
                     for k in (eyes_off_road.NOSE, eyes_off_road.LEYE, eyes_off_road.REYE):
                         cv2.circle(view, (int(kp[k, 0]), int(kp[k, 1])), 9, head_color, -1)
