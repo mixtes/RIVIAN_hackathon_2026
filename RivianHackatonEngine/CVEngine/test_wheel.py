@@ -312,5 +312,38 @@ class WheelConsensusTests(unittest.TestCase):
         self.assertEqual(auto_wheel.tolerance_outline(polygon, 0, (200, 200)), [])
 
 
+class PhoneRuleTests(unittest.TestCase):
+    WHEEL = np.array([[1500, 1100], [1800, 1100], [1800, 1400], [1500, 1400]], np.int32)
+
+    def kp(self, **pts):
+        kp = np.full((17, 3), np.nan, np.float32)
+        kp[rules.LSHO], kp[rules.RSHO] = [1000, 800, .9], [1300, 800, .9]      # shoulder width 300
+        kp[rules.NOSE], kp[rules.LEAR] = [1150, 600, .9], [1080, 590, .9]
+        for name, xy in pts.items():
+            kp[getattr(rules, name)] = [*xy, .9]
+        return kp
+
+    def phones(self, *centers):
+        p = np.full((3, 5), np.nan, np.float32)
+        for i, (x, y) in enumerate(centers):
+            p[i] = [x - 30, y - 50, x + 30, y + 50, .5]
+        return p
+
+    def test_hand_at_face_without_phone_is_not_phone_at_ear(self):
+        f = rules.frame_flags(self.kp(LWR=(1090, 610)), self.phones(), self.WHEEL, 0)
+        self.assertFalse(f['PHONE_AT_EAR'])
+        self.assertTrue(f['hand_at_face'])
+
+    def test_detected_phone_at_ear(self):
+        f = rules.frame_flags(self.kp(LWR=(1090, 640)), self.phones((1085, 610)), self.WHEEL, 0)
+        self.assertTrue(f['PHONE_AT_EAR'])
+        self.assertFalse(f['PHONE_IN_HAND'])
+
+    def test_phone_in_hand_low_even_if_other_hand_touches_face(self):
+        f = rules.frame_flags(self.kp(LWR=(1090, 610), RWR=(1200, 1250)), self.phones((1210, 1260)), self.WHEEL, 0)
+        self.assertTrue(f['PHONE_IN_HAND'])
+        self.assertFalse(f['PHONE_AT_EAR'])
+
+
 if __name__ == '__main__':
     unittest.main()

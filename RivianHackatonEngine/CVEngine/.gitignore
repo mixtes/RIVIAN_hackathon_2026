@@ -2,9 +2,13 @@ venv/
 __pycache__/
 *.pt
 *.ts
+*.task
 *.mp4
 *.mov
 out*/
+phone_dataset/
+phone_train_bundle*.tar.gz
+runs/
 *.npz
 *.csv
 *.pptx
