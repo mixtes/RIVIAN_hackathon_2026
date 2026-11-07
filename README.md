@@ -104,7 +104,7 @@ The emulator reaches the host as `10.0.2.2`. The debug build already points at `
 2. **Start the drive.** In the `bridge>` terminal, `status` should now show a connected client and an active session.
 3. **Act as the driver** in the `bridge>` terminal:
    - `scenario demo fast`: a scripted drive. A phone call escalates VISUAL → AUDIO, eyes off road escalates AUDIO → HAPTIC → CRITICAL, then eyes closed (drowsiness) raises a full-screen alarm with a **Dismiss** button that stays until you press it. The drive then ends by itself.
-   - Or by hand: `start phone_call` … `stop phone_call`, `pulse eyes_off_road 5`, `pulse eyes_closed 2` (then press Dismiss in the app, or type `dismiss`), `auto on` (random behaviour).
+   - Or by hand: `start PHONE_CALL` … `stop PHONE_CALL`, `pulse EYES_OFF_ROAD 5`, `pulse EYES_CLOSED 2` (then press Dismiss in the app, or type `dismiss`), `auto on` (random behaviour).
    - `end` ends the drive. The car shows the score and the mistakes and uploads the drive to the backend.
 4. Open **History**, **Stats** and **Leaderboard** in the app.
 
@@ -113,6 +113,77 @@ Other ways to run it:
 - **No bridge or backend at all:** in the app, Settings → *Debug settings* → **FakeEngine (in-app)**.
 - **Simulate driving (the UI locks down while moving):** Debug settings → *Driving state override*, or emulator Extended controls → *Car data*.
 - **The on-screen keyboard is disabled** on this AVD. Type with your Mac keyboard.
+- **Real detection from a video:** see [Live CV test with the app (Windows)](#live-cv-test-with-the-app-windows) below.
+
+---
+
+## Live CV test with the app (Windows)
+
+The bridge plays a driver video through CVEngine (`RivianHackatonEngine/CVEngine/live.py`) instead of the simulator. The video plays in its own window (plain, no overlays) and starts when the car app starts a drive. Every detection goes through `SafetySystem.on_frame` to the AlertEngine, and the alerts appear **in the app**. When the video ends, the bridge ends the drive and the app shows the score.
+
+```
+ video ─► live.py (models) ─"t,flags"─► bridge: SafetySystem.on_frame ─ WebSocket ─► car app (alerts, score)
+```
+
+### One-time setup (PowerShell)
+
+**1. CV + bridge (one venv for both):**
+```powershell
+cd RivianHackatonEngine
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r CVEngine\requirements.txt
+python -m pip install -e ..\simulated_game_engine
+cd CVEngine; python download_models.py; python download_wheel_models.py; cd ..
+```
+Put your driver video in `RivianHackatonEngine\CVEngine\videos\`.
+
+**2. PostgreSQL 16** (the backend registers the car and the driver once; after that the PIN unlock is offline):
+```powershell
+winget install -e --id PostgreSQL.PostgreSQL.16      # the installer asks for a password for the user "postgres"
+$psql = "C:\Program Files\PostgreSQL\16\bin\psql.exe"
+& $psql -U postgres -c "CREATE ROLE drive LOGIN PASSWORD 'drive' CREATEDB;"
+& $psql -U postgres -c "CREATE DATABASE drive OWNER drive;"
+& $psql -U postgres -d drive -c "CREATE EXTENSION IF NOT EXISTS citext; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+```
+
+**3. Backend** (managed by uv; `python -m uv` works without uv on PATH):
+```powershell
+python -m pip install uv
+cd backend
+python -m uv sync
+(Get-Content .env.example) -replace '@db:5432', '@localhost:5432' | Set-Content .env
+python -m uv run alembic upgrade head
+python -m uv run python -m scripts.seed               # demo login: demo / demo-password-123
+```
+
+**4. Car emulator (Android Automotive):** in Android Studio, open **Device Manager** → **+** → **Create Virtual Device** → category **Automotive** → **Automotive (1024p landscape)** → pick an **API 34 Android Automotive x86_64** image (click Download next to it) → **Finish**. The phone emulator can't run the app: it requires an Automotive device.
+
+**5. Build and install the app** (with the car emulator running):
+```powershell
+cd car_frontend
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+.\gradlew.bat :app:installDebug
+```
+If Gradle can't find the SDK, create `car_frontend\local.properties` with the line `sdk.dir=C:/Users/<you>/AppData/Local/Android/Sdk`. Use forward slashes, because a backslash is an escape character in that file.
+
+### Run the test (one terminal each)
+
+```powershell
+# 1) Backend → http://localhost:8000   (PostgreSQL runs as a Windows service)
+cd backend; .\.venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# 2) Bridge + CVEngine. Wait for "CV: ready. Start a drive in the car app".
+cd RivianHackatonEngine; .\.venv\Scripts\python -m simulated_game_engine --cv CVEngine\videos\YOUR_VIDEO.mp4
+
+# 3) Car emulator (or press ▶ in Device Manager), then start the app
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -list-avds
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd <name from the list>
+& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" shell am start -n com.hackathon.drivescore/.app.MainActivity
+```
+
+In the app: **Sign in** with `demo` / `demo-password-123` (first time only), choose a PIN, and unlock. Unlocking starts the drive. The video window **DriveScore - driver camera** opens, and the alerts show up in the app as CVEngine detects hands off the wheel or eyes off the road. When the video ends, the drive ends and the app shows the score. Ending the drive in the app stops the video. For the next drive, unlock again: the bridge reloads CVEngine after each drive.
+
+Bridge options: `--cv-stride N` (analyze at most every Nth frame, default 6; the video always plays at normal speed and the analysis skips frames it cannot keep up with), `--cv-light` (pose-only: more analyses per second, less accurate, no mediapipe), `--cv-no-phone` (skip phone detection: about twice as many analyses per second), `--cv-no-hands` (skip hands-off-wheel detection), `--cv-keep-drive` (the drive continues after the video ends), `--cv-no-window`, `--cv 0` (webcam), `--cv-play-resumed` (also play for a drive the app resumes after a bridge restart; by default only drives started after the bridge started play the video). The bridge terminal logs every detection (`CV: HANDS_OFF_WHEEL detected`) and every alert it sends (`→ alert ...`). That log is the quickest way to tell whether a missing alert is a detection problem or an app problem.
 
 ### 5. Stop everything
 
@@ -128,7 +199,7 @@ colima stop        # only if you used Docker
 
 ```sh
 cd backend && uv run pytest                          # 104 tests, needs Postgres (drive_test DB)
-cd simulated_game_engine && uv run pytest            # 43 tests
+cd simulated_game_engine && uv run pytest            # 64 tests
 cd car_frontend && ./gradlew :app:testDebugUnitTest  # 57 JVM unit tests (JAVA_HOME set)
 ```
 
@@ -142,4 +213,4 @@ cd car_frontend && ./gradlew :app:testDebugUnitTest  # 57 JVM unit tests (JAVA_H
 | Drives stay "pending sync" | The backend isn't running. Check `curl localhost:8000/health`. They upload automatically once it's back. |
 | Backend: connection refused to Postgres | Start Postgres (step 3.1). Check that `.env` uses `@localhost:5432`, not `@db:5432`. |
 | Port 8000, 8765 or 5432 already in use | `lsof -nP -iTCP:<port> -sTCP:LISTEN` shows which process holds it. |
-| Drowsiness alarm won't go away | Expected: `eyes_closed` is latched. Press **Dismiss** in the app (or type `dismiss` in the bridge CLI). Ending the drive clears it too. |
+| Drowsiness alarm won't go away | Expected: `EYES_CLOSED` is latched. Press **Dismiss** in the app (or type `dismiss` in the bridge CLI). Ending the drive clears it too. |

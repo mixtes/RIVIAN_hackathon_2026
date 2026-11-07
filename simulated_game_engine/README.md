@@ -51,7 +51,7 @@ uv run python -m simulated_game_engine --no-cli --auto --seed 7
 | Command | |
 |---|---|
 | `status` | client, session, active actions, alerts showing (id, type, level, latched), configured actions, unacked results |
-| `start <action>` / `stop <action>` | begin or end a continuous action, e.g. `start phone_call` |
+| `start <action>` / `stop <action>` | begin or end a continuous action, e.g. `start PHONE_CALL` |
 | `pulse <action> <seconds>` | start now, stop automatically after N seconds |
 | `auto on\|off` | random behaviour: every 15–45 s, one configured action is held for 0.5–7 s |
 | `scenario demo [fast\|<speed>]` | about 2 minutes: phone call 4.5 s (VISUAL → AUDIO), eyes off road 5 s (AUDIO → HAPTIC → CRITICAL), eyes closed 2 s (latched CRITICAL: stays until the driver presses Dismiss in the app), a clean stretch, then `end`. It waits for a session if none is active. |
@@ -61,7 +61,22 @@ uv run python -m simulated_game_engine --no-cli --auto --seed 7
 | `drop` | close the car's connection, to test reconnects |
 | `quit` (or Ctrl-D) | stop the bridge |
 
-Actions are the engine's 8 keys (`phone_call`, `phone_use`, `hands_off_wheel`, `eyes_closed`, `eyes_off_road`, `yawn`, `eating_drinking`, `smoking`; case-insensitive). Real detection only produces the first three so far (`DETECTED_ACTIONS`), but the engine's stubs for the others work, so you can simulate all of them. `eyes_closed` (drowsiness) is **latched**: its alert stays after `stop eyes_closed` until it is dismissed (in the app, or with `dismiss`). If you use an action the engine doesn't configure, the CLI shows a warning. The event is still forwarded, and the engine ignores it.
+Actions are the engine's 8 keys (`PHONE_CALL`, `PHONE_USE`, `HANDS_OFF_WHEEL`, `EYES_CLOSED`, `EYES_OFF_ROAD`, `YAWN`, `EATING_DRINKING`, `SMOKING`; always UPPER_CASE; typing them is case-insensitive). Real detection (CVEngine) only produces `EYES_OFF_ROAD` and `HANDS_OFF_WHEEL` so far (`DETECTED_ACTIONS`), but the engine's stubs for the others work, so you can simulate all of them. `EYES_CLOSED` (drowsiness) is **latched**: its alert stays after `stop EYES_CLOSED` until it is dismissed (in the app, or with `dismiss`). If you use an action the engine doesn't configure, the CLI shows a warning. The event is still forwarded, and the engine ignores it.
+
+### Real detection: a video as the driver (`--cv`)
+
+```sh
+python -m simulated_game_engine --cv ../RivianHackatonEngine/CVEngine/videos/drive.mp4
+```
+
+Instead of you typing actions, CVEngine (`RivianHackatonEngine/CVEngine/live.py`) watches a video (or `--cv 0`, a webcam) and its per-frame state byte goes to `SafetySystem.on_frame` (`core.on_frame`). Each drive goes like this:
+1. live.py loads its models in advance (`CV: ready`).
+2. The car app starts a drive, and the plain video window opens and plays in real time.
+3. Alerts go to the app.
+4. The video ends, and the bridge ends the drive (reason `ENGINE`). If the app ends the drive first, the video stops.
+5. live.py loads again for the next drive.
+
+live.py runs with the engine's own venv (`<engine>/.venv`, override with `--cv-python`), because it needs CVEngine's packages. The bridge timestamps each record when it arrives, so CV time and the ticker use the same clock. Options: `--cv-stride N` (default 6), `--cv-light` (pose-only, faster on CPU), `--cv-keep-drive`, `--cv-no-window`. The full Windows walkthrough with the app is in the [root README](../README.md#live-cv-test-with-the-app-windows).
 
 ### Smoke client (a stand-in for the car app)
 
@@ -87,6 +102,7 @@ src/simulated_game_engine/
 │                      returns the messages to send. Alert ids, pending results, resumption.
 ├── server.py          BridgeServer: websockets transport, single-client policy, ticker task
 ├── simulator.py       Simulator: start/stop/pulse, auto mode, scenarios (injectable sleep)
+├── cv_source.py       CvSource: runs CVEngine live.py on a video per drive, records → core.on_frame
 ├── console.py         interactive prompt_toolkit CLI
 └── app.py             argument parsing, wiring, headless mode
 ```

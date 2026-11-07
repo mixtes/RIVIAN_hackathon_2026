@@ -1,5 +1,5 @@
 """LIVE hands-on-wheel monitor. Frames are consumed one at a time; nothing after the current frame is ever used.
-Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--flags flags.csv] [--stream] [--head face|pose] [--realtime]
+Usage: python3 live.py SOURCE [--method hybrid|pose|mediapipe] [--stride N] [--show] [--save out.mp4] [--events events.jsonl] [--frames frames.csv] [--output simple.csv] [--flags flags.csv] [--stream] [--play] [--wait] [--head face|pose] [--realtime]
   SOURCE: a camera index (0, 1, ...) or a video file that is replayed as if it were a live stream.
   --stride N  run the models on every Nth frame only (default 1). Timing always uses source time.
   --realtime  pace a video file at its own fps (a camera is always real time).
@@ -13,9 +13,18 @@ Events are printed the moment they are confirmed or ended: HANDS_OFF_THE_WHEEL (
   --head        how the head is measured (default face): face = MediaPipe face angles in degrees, pose keypoints
                 as the fallback where no face is found; pose = pose keypoints only (no face model)
   --flags FILE  the byte sent to the AlertEngine/GameEngine per analyzed frame (cv_flags.py): 0x20 hands off the
-                wheel, 0x40 head turned away or down/up (eyes_off_road.py), lightly smoothed. CSV: frame,time_s,flags,hands_off,eyes_off_road
+                wheel, 0x40 head turned away or down/up (eyes_off_road.py), lightly smoothed; 0x10 phone use (live_phone.PhoneMonitor,
+                confirmed: ~1 s to switch on, ~3 s to switch off). CSV: frame,time_s,flags,hands_off,eyes_off_road,phone
+  --no-hands    skip hands-off-wheel detection and wheel calibration (bit 0x20 stays 0; faster)
+  --no-phone    skip phone detection; --dark-phone-model FILE sets the fine-tuned dark-frame phone model
+  --play        show the plain video (every frame, no overlays) in a window at its real speed; q closes it and stops.
+                A player thread reads and shows the source; the analysis takes the newest frame (at least --stride
+                frames after the previous one) and skips frames it cannot keep up with, so the video never slows down
+  --wait        load the models and calibrate the wheel on the first frames (a video is rewound afterwards), print
+                READY to stderr, then wait for one line on stdin before playing (used by the bridge: the video starts
+                when the car app starts a drive)
 """
-import argparse, json, sys, time
+import argparse, json, sys, threading, time
 import cv2, numpy as np
 import auto_wheel, rules
 import hands_pose
@@ -29,6 +38,7 @@ CLEAR_S = 0.5       # a hand seen near the wheel this long ends a confirmed even
 LOSS_S = 2.0        # no usable observation for this long -> observation lost (event ends, state resets)
 rules_sk = [(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(0,1),(0,2),(1,3),(2,4)]
 POSE_MODEL, POSE_SIZE, DRIVER_ON_RIGHT = 'yolo11m-pose.pt', 640, True
+PLAY_WINDOW, PLAY_MAX_WIDTH = 'DriveScore - driver camera', 1280    # --play
 
 
 def pick_device():
@@ -69,6 +79,14 @@ def make_hands(method, wheel, margin):
         return hands_mediapipe.MediaPipeHands(wheel, margin)
     import hands_hybrid
     return hands_hybrid.HybridHands(wheel, margin)
+
+
+class NoHands:
+    """--no-hands: stands in for a hand method without running anything. Every hand is 'unknown', so the
+    hands-off bit (0x20) stays 0 and HandsOffMachine never confirms; no wheel calibration is needed."""
+
+    def update(self, frame, kp):
+        return ['unknown', 'unknown'], dict(points=[None, None], landmarks=[None, None], sources=['off', 'off'])
 
 
 def classify(states):
@@ -144,6 +162,91 @@ class HandsOffMachine:
         return []
 
 
+class Player(threading.Thread):
+    """--play: reads the source and shows it at its own speed, independent of the analysis.
+
+    The analysis calls next() and gets the newest frame, so a slow CPU drops analysis frames instead of
+    slowing the video down. A video file is paced at its fps; a camera delivers frames in real time.
+    """
+
+    def __init__(self, cap, fps, is_cam, started):
+        super().__init__(daemon=True)
+        self.cap, self.fps, self.is_cam, self.started = cap, fps, is_cam, started
+        self.cond = threading.Condition()
+        self.latest = None               # (index, t, frame) of the newest frame read
+        self.done = False
+        self.read = self.drawn = self.late = 0
+        self.max_draw_gap = 0.0          # longest time the window showed the same frame (s)
+
+    def run(self):
+        n = 0
+        last_draw = time.monotonic()
+        cv2.namedWindow(PLAY_WINDOW, cv2.WINDOW_AUTOSIZE)
+        if hasattr(cv2, 'WND_PROP_TOPMOST'):  # keep it above the emulator / terminals (Windows)
+            cv2.setWindowProperty(PLAY_WINDOW, cv2.WND_PROP_TOPMOST, 1)
+        try:
+            while not self.done:
+                ok, frame = self.cap.read()
+                if not ok:
+                    break
+                t = (time.monotonic() - self.started) if self.is_cam else n / self.fps
+                late = False
+                if not self.is_cam:
+                    delay = self.started + t - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                    late = delay < -0.25         # behind schedule: skip drawing to catch up
+                with self.cond:
+                    self.latest = (n, t, frame)
+                    self.cond.notify_all()
+                n += 1
+                self.read += 1
+                if late:
+                    self.late += 1
+                else:
+                    now = time.monotonic()
+                    self.max_draw_gap = max(self.max_draw_gap, now - last_draw)
+                    last_draw = now
+                    self.drawn += 1
+                    scale = min(1.0, PLAY_MAX_WIDTH / frame.shape[1])
+                    cv2.imshow(PLAY_WINDOW, cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1 else frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+        finally:
+            with self.cond:
+                self.done = True
+                self.cond.notify_all()
+            cv2.destroyAllWindows()
+
+    def next(self, after, min_gap):
+        """The newest frame whose index is >= after + min_gap, or None once the source has ended."""
+        with self.cond:
+            while not self.done and (self.latest is None or self.latest[0] < after + min_gap):
+                self.cond.wait(0.5)
+            if self.done:
+                return None
+            return self.latest
+
+    def stop(self):
+        with self.cond:
+            self.done = True
+            self.cond.notify_all()
+
+
+def precalibrate(cap, cal, stride, is_cam):
+    """--wait: lock the wheel on the first frames before the drive starts, then rewind a video."""
+    n = 0
+    while cal.status == 'collecting':
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if n % stride == 0:
+            cal.add_frame(frame)
+        n += 1
+    if not is_cam:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+
 def open_source(source):
     cam = source.isdigit()
     cap = cv2.VideoCapture(int(source) if cam else source)
@@ -170,13 +273,20 @@ def main():
     ap.add_argument('--no-sleep-bit', action='store_true',
                     help='do not put the asleep / slumped state into bit 0x80 (it is only logged and drawn)')
     ap.add_argument('--head', choices=('face', 'pose'), default='face')
-    ap.add_argument('--no-hands', action='store_true',
-                    help='turn hands-off-wheel detection off completely: no wheel calibration (the slow YOLOE model is '
-                         'not even loaded), no hand tracking; bit 0x20 is always 0')
     ap.add_argument('--forward-start', action='store_true',
-                    help='assume the driver looks at the road in the first ~1.5 s: that head pose becomes the fixed '
-                         'forward baseline (short warm-up, no prior, no drift)')
+                    help='assume the driver mostly looks at the road in the first ~4 s: their most frequent head pose '
+                         'becomes the fixed forward baseline (nothing reported for 2 s, no prior, no drift)')
     ap.add_argument('--method', choices=('hybrid', 'pose', 'mediapipe'), default='hybrid')
+    ap.add_argument('--no-phone', action='store_true', help='do not run phone detection (bit 0x10 stays 0)')
+    ap.add_argument('--no-hands', action='store_true',
+                    help='do not run hands-off-wheel detection or wheel calibration (bit 0x20 stays 0); faster, and '
+                         'other detections start on the first frame')
+    ap.add_argument('--dark-phone-model', default=None,
+                    help='fine-tuned phone model for dark frames (default: phone_dataset/runs/phone_ft/weights/'
+                         'best.pt if present)')
+    ap.add_argument('--play', action='store_true', help='plain video window at real speed, no overlays')
+    ap.add_argument('--wait', action='store_true',
+                    help='load models and calibrate, print READY to stderr, wait for a stdin line before playing')
     args = ap.parse_args()
     stream_out = sys.stdout
     if args.stream:
@@ -186,18 +296,39 @@ def main():
     device = pick_device()
     auto_wheel.DEVICE = device
     pose = YOLO(POSE_MODEL)
-    cal = auto_wheel.WheelCalibrator(prior_fallback=True)
     print(f'device={device}; loading models and warming up...', flush=True)
     pose.predict(np.zeros((640, 640, 3), np.uint8), imgsz=POSE_SIZE, verbose=False, device=device)
+    cal = None
     if not args.no_hands:
+        cal = auto_wheel.WheelCalibrator(prior_fallback=True)
         cal.model = auto_wheel.load_model()
         cal.model.predict(np.zeros((640, 640, 3), np.uint8), imgsz=960, verbose=False, device=device)
+    else:
+        print('hands-off-wheel detection off (--no-hands): no wheel calibration, bit 0x20 stays 0', flush=True)
 
     faces = None
     if args.head == 'face':
         import head_face
         faces = head_face.FaceHead()
+    phone = None
+    if not args.no_phone:
+        from live_phone import PhoneMonitor
+        phone = PhoneMonitor(dark_phone_model=args.dark_phone_model or PhoneMonitor.DEFAULT_DARK_MODEL,
+                             device=device)
+        print(f'phone detection on (dark-frame model: {"yes" if phone.det_dark else "no"})', flush=True)
     cap, is_cam = open_source(args.source)
+    if args.wait:
+        if cal is not None:
+            cal_started = time.monotonic()
+            precalibrate(cap, cal, args.stride, is_cam)
+            if cal.status == 'failed':
+                sys.exit(f'Wheel calibration failed: {cal.error}')
+            if cal.status == 'locked':
+                print(f'wheel LOCKED before the drive: source={cal.info["source"]} method={args.method} '
+                      f'(calibration took {time.monotonic() - cal_started:.1f}s)', flush=True)
+        print('READY', file=sys.stderr, flush=True)
+        if not sys.stdin.readline():         # EOF: whoever started us went away
+            return
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     writer = None
     log = open(args.events, 'w') if args.events else None
@@ -205,7 +336,7 @@ def main():
     ocsv = open(args.output, 'w') if args.output else None
     bcsv = open(args.flags, 'w') if args.flags else None
     if bcsv:
-        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants\n')
+        bcsv.write('frame,time_s,flags,hands_off,eyes_off_road,occupants,phone\n')
     head = eyes_off_road.HeadPoseDetector(forward_start=args.forward_start)
     eyes = eyes_closed.EyeClosureDetector()
     slumper = slump.SlumpDetector()
@@ -220,24 +351,39 @@ def main():
                    'occupants,occ_driver,occ_front,occ_rear,occ_raw\n')
     machine, started = HandsOffMachine(), time.monotonic()
     frame_no = proc = 0
-    wheel = margin = hands = None
+    wheel = margin = None
+    hands = NoHands() if args.no_hands else None
+    if cal is not None and cal.status == 'locked':     # calibrated during --wait
+        wheel, margin = cal.polygon, cal.margin
+        hands = make_hands(args.method, wheel, margin)
+    player = Player(cap, fps, is_cam, started) if args.play else None
+    if player:
+        player.start()
+    last_idx = -args.stride
     lat = []
     t = 0.0
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            t = (time.monotonic() - started) if is_cam else frame_no / fps
-            if args.realtime and not is_cam:
-                delay = started + t - time.monotonic()
-                if delay > 0:
-                    time.sleep(delay)
-            frame_no += 1
-            if (frame_no - 1) % args.stride:
-                continue
+            if player:
+                newest = player.next(last_idx, args.stride)
+                if newest is None:
+                    break
+                last_idx, t, frame = newest
+                frame_no = last_idx + 1
+            else:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                t = (time.monotonic() - started) if is_cam else frame_no / fps
+                if args.realtime and not is_cam:
+                    delay = started + t - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                frame_no += 1
+                if (frame_no - 1) % args.stride:
+                    continue
             t0 = time.monotonic()
-            if cal.status == 'collecting' and not args.no_hands:
+            if cal is not None and cal.status == 'collecting':
                 if cal.add_frame(frame) == 'collecting':
                     continue
                 if cal.status == 'locked':
@@ -246,7 +392,7 @@ def main():
                     print(f'[t={t:6.2f}s] wheel LOCKED source={cal.info["source"]} method={args.method} '
                           f'(calibration took {time.monotonic() - started:.1f}s of wall time)', flush=True)
                 continue
-            if cal.status == 'failed':
+            if cal is not None and cal.status == 'failed':
                 sys.exit(f'Wheel calibration failed: {cal.error}')
             result = pose.predict(frame, imgsz=POSE_SIZE, conf=0.25, verbose=False, device=device)[0]
             kp = driver_keypoints(result, frame.shape[1]) if result.keypoints is not None else None
@@ -255,15 +401,12 @@ def main():
                                     result.keypoints.data.cpu().numpy(), (frame.shape[1], frame.shape[0]))
             else:
                 occ = people.update(t, [], [], [], (frame.shape[1], frame.shape[0]))
-            if args.no_hands:
-                states, dbg = ('unknown', 'unknown'), {'points': [None, None], 'sources': ('-', '-'), 'landmarks': []}
-            else:
-                states, dbg = hands.update(frame, kp)
+            states, dbg = hands.update(frame, kp)
             points = dbg['points']
             label = classify(states)
             face = faces.measure(frame, kp) if faces else None
             obs = head.update(t, kp, face, (frame.shape[1], frame.shape[0]), driver_present=occ.zones['driver'] >= 1)
-            hands_bit = 0 if args.no_hands else hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
+            hands_bit = hands_filter.update(t, {'off': 1, 'near': 0, 'unknown': None}[label])
             head_bit = head_filter.update(t, head.raw_bit(obs))
             ears = [e for e in ((face.ear_l, face.ear_r) if face else ()) if e is not None]
             eye = eyes.update(t, obs.blink if obs.source == 'face' else None, obs.gaze_down or 0.0,
@@ -274,8 +417,10 @@ def main():
                 sleep_bits.append(1)
             sleep_bit = sleep_filter.update(t, (1 if 1 in sleep_bits else 0) if sleep_bits else None)
             asleep = bool(sleep_bit) and not args.no_sleep_bit
-            flags = cv_flags.pack_flags(asleep=asleep,
-                                        hands_off=bool(hands_bit), off_road=bool(head_bit))
+            # PHONE_USE is already confirmed/debounced by phone_events.EventTracker: no FlickerFilter on top.
+            phone_bit = phone.update(t, frame, kp) if phone is not None else 0
+            flags = cv_flags.pack_flags(asleep=asleep, hands_off=bool(hands_bit), off_road=bool(head_bit),
+                                        phone=bool(phone_bit))
             if args.stream:
                 try:
                     print(cv_flags.format_record(t, flags, occ.count), file=stream_out, flush=True)
@@ -291,7 +436,7 @@ def main():
                 ocsv.write(f'{frame_no - 1},{t:.3f},{off},{unk}\n')
                 ocsv.flush()
             if bcsv:
-                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit},{occ.count}\n')
+                bcsv.write(f'{frame_no - 1},{t:.3f},{flags},{hands_bit},{head_bit},{occ.count},{phone_bit}\n')
                 bcsv.flush()
             if fcsv:
                 cells = []
@@ -369,7 +514,7 @@ def main():
                     head_text += f'  blink {obs.blink:.2f}'
                 cv2.putText(view, head_text, (30, 240), 0, 1.3, head_color, 4)
                 cv2.putText(view, f'FLAGS 0x{flags:02X}  hands_off={hands_bit} eyes_off_road={head_bit} '
-                                  f'asleep={int(bool(flags & cv_flags.ASLEEP))}',
+                                  f'asleep={int(bool(flags & cv_flags.ASLEEP))} phone={phone_bit}',
                             (30, 320), 0, 1.5, (0, 0, 255) if flags else (200, 200, 200), 4)
                 zone_color = {'driver': (255, 200, 0), 'front': (0, 200, 255), 'rear': (255, 0, 255)}
                 for person in occ.people:
@@ -402,6 +547,15 @@ def main():
                     cv2.rectangle(view, (30, 430), (30 + int(400 * min(eye.score, 1.0)), 460), eye_color, -1)
                     mark = 30 + int(400 * eyes_closed.ENTER)
                     cv2.line(view, (mark, 425), (mark, 465), (255, 255, 255), 3)
+                if phone is not None and phone.last is not None:
+                    ev, boxes, _ = phone.last
+                    for p in boxes:
+                        used = ev.state == 'POSITIVE' and ev.phone is not None and tuple(p[:4]) == tuple(ev.phone[:4])
+                        col = (0, 0, 255) if used else (255, 0, 255)
+                        cv2.rectangle(view, (int(p[0]), int(p[1])), (int(p[2]), int(p[3])), col, 4)
+                        cv2.putText(view, f'phone {p[4]:.2f}', (int(p[0]), int(p[1]) - 10), 0, 1.2, col, 3)
+                    cv2.putText(view, f'PHONE {"USE" if phone_bit else "-"}  evidence {ev.state} ({ev.reason})',
+                                (30, 660), 0, 1.3, (0, 0, 255) if phone_bit else (200, 200, 200), 4)
                 if kp is not None and obs.yaw is not None:
                     for k in (eyes_off_road.NOSE, eyes_off_road.LEYE, eyes_off_road.REYE):
                         cv2.circle(view, (int(kp[k, 0]), int(kp[k, 1])), 9, head_color, -1)
@@ -415,6 +569,11 @@ def main():
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
     finally:
+        if player:
+            player.stop()
+            player.join(timeout=2)
+            print(f'player: read {player.read} frames, drawn {player.drawn}, skipped {player.late} (late); '
+                  f'longest freeze {player.max_draw_gap:.2f}s', flush=True)
         for ev in machine.finish(t):
             print(f'[t={t:6.2f}s] EVENT {json.dumps(ev)}', flush=True)
             if log:

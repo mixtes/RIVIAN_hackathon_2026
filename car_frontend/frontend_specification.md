@@ -430,7 +430,7 @@ The severity is **never** decided by the app. It always uses the engine's `level
 ### 9.2 Queueing and deduplication
 - Only **one** visual alert is shown at a time. Priority is `CRITICAL` > `HAPTIC` > `AUDIO` > `VISUAL`, and a higher level **preempts** a lower one. The preempted alert resumes if it is still active.
 - A **latched** alert outranks everything: while one is present it is the one shown (even over a newer non-latched alert of the same level). Lower alerts keep queuing and resume after the Dismiss.
-- The same `alert_id` → update in place. This is how the engine's **escalation** arrives (for example `eyes_off_road`: `AUDIO` at 1 s → `HAPTIC` at 2.5 s → `CRITICAL` at 4 s). On an escalation, the new level's sound and TTS play.
+- The same `alert_id` → update in place. This is how the engine's **escalation** arrives (for example `EYES_OFF_ROAD`: `AUDIO` at 1 s → `HAPTIC` at 2.5 s → `CRITICAL` at 4 s). On an escalation, the new level's sound and TTS play.
 - The same `type` within a **10 s cooldown** after its clear → the visual is shown, but the chime and TTS are not replayed at the same level (to avoid nagging). This is on top of any cooldown the engine applies. **Latched alerts are never muted** by this cooldown.
 - Audio uses `AudioFocusRequest(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)` with `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, so media is ducked rather than stopped.
 - TTS language follows the system locale. TTS initialization failure → sound only.

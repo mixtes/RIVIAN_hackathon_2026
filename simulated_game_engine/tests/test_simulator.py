@@ -102,11 +102,11 @@ async def test_scenario_waits_for_session_and_aborts_when_it_ends(core, clock) -
 async def test_pulse_starts_and_stops(core, clock) -> None:
     sim, ft = make_sim(core, clock)
     with pytest.raises(NoActiveSessionError):
-        sim.pulse("phone_call", 1.0)
+        sim.pulse("PHONE_CALL", 1.0)
     core.handle(start_msg())
-    await sim.pulse("phone_call", 3.5)
+    await sim.pulse("PHONE_CALL", 3.5)
     assert [m["type"] for m in ft.sent] == [p.ALERT, p.ALERT, p.ALERT_CLEAR]
-    assert "phone_call" not in core.active_actions
+    assert "PHONE_CALL" not in core.active_actions
 
 
 async def test_auto_mode_generates_actions(core, clock) -> None:

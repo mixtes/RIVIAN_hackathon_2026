@@ -147,6 +147,50 @@ class LatestFrame:
         self.cap.release()
 
 
+class PhoneMonitor:
+    """PHONE_USE for one camera, frame by frame, for a pipeline that already has the driver keypoints
+    (e.g. live.py). update(t, frame, kp) -> 1/0: the confirmed PHONE_USE state (phone_events.EventTracker),
+    already debounced (~1 s to switch on, ~3 s to switch off), so it needs no extra flicker filter.
+    The dark-frame model is optional (it is git-ignored); without it dark phones are found less often."""
+
+    DEFAULT_DARK_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      'phone_dataset', 'runs', 'phone_ft', 'weights', 'best.pt')
+
+    def __init__(self, phone_model=DET_MODEL, dark_phone_model=DEFAULT_DARK_MODEL, hands=True, device=None):
+        from ultralytics import YOLO
+        from phone_events import CabinMotion, EventTracker, PhoneEvidence
+        self.det, self.device = YOLO(phone_model), device
+        self.ids = phone_class_ids(self.det)
+        self.det_dark = YOLO(dark_phone_model) if dark_phone_model and os.path.isfile(dark_phone_model) else None
+        self.dark_ids = phone_class_ids(self.det_dark) if self.det_dark else None
+        self.finder = None
+        if hands:
+            try:
+                from hands import HandFinder
+                self.finder = HandFinder()
+            except ImportError:
+                pass
+        self.evidence, self.tracker, self.cabin = PhoneEvidence(), EventTracker(), CabinMotion()
+        self.last = None                 # (evidence, phones, used_dark_model) of the latest frame
+
+    def update(self, t, frame, kp):
+        crop = frame[CY0:, CX0:]
+        dark = self.det_dark is not None and is_dark(crop)
+        model, ids, conf = (self.det_dark, self.dark_ids, DARK_CONF) if dark else (self.det, self.ids, PHONE_CONF)
+        d = model(crop, imgsz=DET_SIZE, conf=conf, classes=ids, verbose=False, device=self.device)[0]
+        phones = [(b[0] + CX0, b[1] + CY0, b[2] + CX0, b[3] + CY0, float(c))
+                  for b, c in zip(d.boxes.xyxy.cpu().numpy(), d.boxes.conf.cpu().numpy())][:3]
+        hands = (lambda: self.finder.find(frame, kp)) if self.finder is not None and kp is not None else None
+        ev = self.evidence.update(t, kp, phones, self.cabin.shift(frame), hands)
+        self.tracker.update(ev)
+        self.last = (ev, phones, dark)
+        return int(self.tracker.active is not None)
+
+    @property
+    def active(self):
+        return self.tracker.active is not None
+
+
 def record_codec(path):
     """VP8 for .webm (plays in VS Code and browsers), mp4v otherwise (converted by to_h264 afterwards)."""
     return 'VP80' if path.lower().endswith('.webm') else 'mp4v'

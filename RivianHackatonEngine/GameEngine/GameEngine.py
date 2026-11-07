@@ -115,7 +115,7 @@ DEFAULT_SCORE_CONFIG: Dict[str, ActionScoreConfig] = {
     "EYES_CLOSED": ActionScoreConfig(weight=1.5, grace_seconds=0.5),       # STUB: not detected yet
     "YAWN": ActionScoreConfig(weight=0.1, grace_seconds=0.0),              # STUB: not detected yet
     "HANDS_OFF_WHEEL": ActionScoreConfig(weight=0.3, grace_seconds=3.0),   # both hands off
-    "PHONE_USE": ActionScoreConfig(weight=1.0, grace_seconds=1.0),         # STUB: not wired in CVEngine yet
+    "PHONE_USE": ActionScoreConfig(weight=1.0, grace_seconds=1.0),         # CVEngine bit 0x10 (already ~1 s confirmation delay in CV)
     "EATING_DRINKING": ActionScoreConfig(weight=0.2, grace_seconds=3.0),   # STUB: not detected yet
     "SMOKING": ActionScoreConfig(weight=0.2, grace_seconds=3.0),           # STUB: not detected yet
 }

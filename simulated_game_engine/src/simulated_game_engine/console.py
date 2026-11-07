@@ -18,7 +18,7 @@ log = logging.getLogger("simulated_game_engine.cli")
 HELP = """\
 Commands:
   status                      connection, session, active/configured actions, pending results
-  start <action>              begin a continuous action    (e.g. start phone_call)
+  start <action>              begin a continuous action    (e.g. start PHONE_CALL)
   stop <action>               end it
   pulse <action> <seconds>    start now, stop automatically after N seconds
   auto on|off                 random driver behaviour during sessions
@@ -29,8 +29,8 @@ Commands:
   drop                        close the car's connection (to test reconnects)
   help                        this text
   quit                        stop the bridge
-Actions are engine keys, e.g. phone_call, eyes_closed (case-insensitive).
-eyes_closed (drowsiness) is latched: its alert stays until dismissed in the app or here."""
+Actions are the engine keys in UPPER_CASE, e.g. PHONE_CALL, EYES_CLOSED (typing is case-insensitive).
+EYES_CLOSED (drowsiness) is latched: its alert stays until dismissed in the app or here."""
 
 
 NO_ARG_COMMANDS = frozenset({"help", "?", "quit", "exit", "status", "end", "drop", "dismiss"})
@@ -72,7 +72,7 @@ class Console:
         args = shlex.split(line)
         cmd, rest = args[0].lower(), args[1:]
         if cmd in NO_ARG_COMMANDS and rest:
-            # Never ignore extra words: `end eyes_off_road` used to end the whole drive.
+            # Never ignore extra words: `end EYES_OFF_ROAD` used to end the whole drive.
             hint = (f"; to stop an action use 'stop {rest[0]}'"
                     if cmd == "end" and self.core.is_configured(rest[0]) else "")
             raise ValueError(f"'{cmd}' takes no arguments{hint}")
@@ -112,7 +112,7 @@ class Console:
     def _action(self, rest: list[str], cmd: str) -> str:
         if len(rest) != 1:
             raise ValueError(f"usage: {cmd} <action>")
-        action = rest[0].lower()
+        action = rest[0].upper()
         if not self.core.is_configured(action):
             print(f"! warning: the engine does not configure {action!r}; it will ignore it "
                   f"(configured: {', '.join(self.core.configured_actions)})")

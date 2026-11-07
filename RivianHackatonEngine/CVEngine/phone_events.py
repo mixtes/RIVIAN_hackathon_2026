@@ -33,6 +33,7 @@ DEFAULT_SCALE = 350.0          # shoulder width in px when shoulders are not vis
 EAR_DIST = 0.8                 # phone center to ear/nose, in shoulder widths
 EAR_HAND_DIST = 0.8            # wrist to phone center for a phone held at the ear
 HAND_DIST = 0.6                # wrist to phone center for a phone in the hand
+HAND_EDGE_DIST = 0.35          # ...or wrist to the nearest edge of the phone box (big phones held flat)
 SAME_PHONE_DIST = 0.5          # max jump of a phone between analyzed frames to count as the same phone
 STILL_WINDOW_S = 3.0           # look back this long to decide whether the phone moves
 STILL_MIN_SPAN_S = 1.5         # need observations spread over at least this long
@@ -43,6 +44,7 @@ MIN_FINGERS_ON_PHONE = 3       # hand points on the phone box needed for a still
 MIN_STILL_CONF = 0.3           # a still phone (no motion cue) also needs this detector confidence;
                                # weaker boxes were e.g. the textured grip pad of the steering wheel
 PALM_ALONG = (0.35, 0.75)      # phone in the palm: center this far past the wrist along the forearm (shoulder widths)
+PALM_NEAR_EDGE = 0.4           # for a big phone: its near edge at most this far past the wrist
 PALM_ACROSS = 0.33             # ...and at most this far to the side of the forearm line
 PALM_SLOPE = 0.8               # ...and at most ~39 degrees off the forearm direction
 MIN_PALM_CONF = 0.15           # detector confidence needed for the in-palm check
@@ -134,11 +136,14 @@ class PhoneEvidence:
         for p in phones:
             c = np.array([(p[0] + p[2]) / 2, (p[1] + p[3]) / 2])
             hand = min(np.hypot(*(c - w)) for w in wrists) / sw
+            edge = min(_box_distance(w, p) for w in wrists) / sw
             ear = min((np.hypot(*(c - h)) for h in head), default=np.inf) / sw
             if ear < EAR_DIST and hand < EAR_HAND_DIST:
                 return Evidence(ts, POSITIVE, 'phone at ear, held by hand', tuple(p))
-            if hand < HAND_DIST and (best is None or hand < best[0]):
-                best = (hand, p, c)
+            # A big phone held flat (landscape, at the fingertips) has its center far from the wrist even
+            # though its near edge is in the hand, so the box edge counts too.
+            if (hand < HAND_DIST or edge < HAND_EDGE_DIST) and (best is None or edge < best[0]):
+                best = (edge, p, c)
         if best is None:
             return Evidence(ts, NEGATIVE, 'phone not at ear or hand', tuple(phones[0]))
         _, p, c = best
@@ -146,7 +151,7 @@ class PhoneEvidence:
         if moving:
             return Evidence(ts, POSITIVE, 'phone in hand and moving', tuple(p))
         conf = p[4] if len(p) > 4 else 1.0
-        palm = phone_in_palm(kp, c, sw)
+        palm = phone_in_palm(kp, c, sw, p)
         if looking_down(kp, sw):
             # A still phone near the hand while looking down is only use if it is held: fingers on it
             # (hand landmarks), or, when the fingers are hidden behind the phone, the phone sits in the palm
@@ -167,9 +172,17 @@ class PhoneEvidence:
         return Evidence(ts, NEGATIVE, 'phone near hand but lying still', tuple(p))
 
 
-def phone_in_palm(kp, center, sw):
+def _box_distance(point, box):
+    """Pixels from a point to the nearest point of an (x1, y1, x2, y2, ...) box; 0 inside it."""
+    dx = max(box[0] - point[0], 0.0, point[0] - box[2])
+    dy = max(box[1] - point[1], 0.0, point[1] - box[3])
+    return float(np.hypot(dx, dy))
+
+
+def phone_in_palm(kp, center, sw, box=None):
     """True when the phone center sits where the palm is: straight out from a wrist along its forearm
-    (elbow -> wrist direction). A lying phone next to a resting hand is beside or behind the wrist."""
+    (elbow -> wrist direction). A lying phone next to a resting hand is beside or behind the wrist.
+    With `box`, a big phone may reach further: its near edge (not its center) must be within reach."""
     for wr, el in ((LWR, LEL), (RWR, REL)):
         if kp[wr, 2] < KP_CONF or kp[el, 2] < KP_CONF:
             continue
@@ -179,7 +192,11 @@ def phone_in_palm(kp, center, sw):
         u = u / np.hypot(*u)
         v = (np.asarray(center) - kp[wr, :2]) / sw
         along, across = float(v @ u), abs(float(u[0] * v[1] - u[1] * v[0]))
-        if PALM_ALONG[0] <= along <= PALM_ALONG[1] and across <= min(PALM_ACROSS, PALM_SLOPE * along):
+        far = PALM_ALONG[1]
+        if box is not None:
+            half = 0.5 * (abs(u[0]) * (box[2] - box[0]) + abs(u[1]) * (box[3] - box[1])) / sw
+            far = max(far, half + PALM_NEAR_EDGE)
+        if PALM_ALONG[0] <= along <= far and across <= min(PALM_ACROSS, PALM_SLOPE * along):
             return True
     return False
 

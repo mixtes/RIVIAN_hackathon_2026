@@ -5,7 +5,7 @@ Bit layout, most significant bit first; a higher bit is a higher priority:
   0x80 fell asleep / unresponsive: eyes closed (eyes_closed.py) or slumped posture (slump.py)
   0x40 looked off the road  (head turned away, see eyes_off_road.py)
   0x20 hands off the steering wheel
-  0x10 distracted by mobile phone (not wired into the live output yet)
+  0x10 distracted by mobile phone (live_phone.PhoneMonitor: already confirmed, not passed through FlickerFilter)
   0x0F reserved, always sent as 0
 A bit is a STATE ("the condition is present in this frame"), lightly smoothed here; no duration hold is applied:
 the engines own every duration threshold. 0 never proves absence: when nothing can be observed the bit is 0.

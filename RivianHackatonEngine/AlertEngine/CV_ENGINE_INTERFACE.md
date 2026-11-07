@@ -53,7 +53,7 @@ Most significant bit first. **A higher bit is a higher priority**, so a plain nu
 | 7 | `0x80` | fell asleep or unresponsive: eyes closed for longer than a blink, **or** posture slumped (head dropped to or below the shoulder line, e.g. fainted) | `EYES_CLOSED` (drowsiness is reported as `EYES_CLOSED`, see `CAR_FRONTEND_INTERFACE.md` §3) | **implemented** (on by default; `--no-sleep-bit` turns it off) |
 | 6 | `0x40` | looked off the road | `EYES_OFF_ROAD` | **not implemented yet** |
 | 5 | `0x20` | hands off the steering wheel | `HANDS_OFF_WHEEL` | **implemented** |
-| 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | offline rules exist in CVEngine; **not wired into the live output yet** |
+| 4 | `0x10` | distracted by mobile phone | `PHONE_USE` (see the note below) | live (`live_phone.PhoneMonitor` in `live.py`); confirmed state: about 1 s to switch on, about 3 s to switch off |
 | 3 to 0 | `0x0F` | reserved | none | always sent as 0 |
 
 Notes:
@@ -113,7 +113,7 @@ Rules:
 - **No suppression by priority.** If bits 5 and 4 are both 1, you report both alerts (`CAR_FRONTEND_INTERFACE.md` §5.1 rule 7). Priority is only the call order of §5.
 - **Latched `EYES_CLOSED` (bit 7).** When the bit goes `1 → 0`, the latched alert stays until the driver presses Dismiss, as already specified. A bit that is `1` again after a dismiss is a new occurrence (rule 9 there). Nothing here changes that.
 - **Not implemented yet.** Bits 7 and 6 are never set today. Their configs (`EYES_CLOSED`, `EYES_OFF_ROAD`) must still work, because the simulator can trigger them and they will be wired in later.
-- **`DETECTED_ACTIONS`** (`main.py`): the actions CVEngine really produces. Today that is `HANDS_OFF_WHEEL` only. It gains `PHONE_USE` when bit 4 goes live, and `EYES_OFF_ROAD` and `EYES_CLOSED` later.
+- **`DETECTED_ACTIONS`** (`main.py`): the actions CVEngine really produces. Today: `EYES_OFF_ROAD`, `HANDS_OFF_WHEEL` and `PHONE_USE`; `EYES_CLOSED` later.
 
 ---
 
