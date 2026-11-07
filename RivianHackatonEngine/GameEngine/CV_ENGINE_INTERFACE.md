@@ -97,11 +97,11 @@ Rules:
 
 ## 6. What this means for the GameEngine
 
-- **The GameEngine needs no code change.** It keeps receiving `process_event(action, is_active, timestamp)`. Everything in `CAR_FRONTEND_INTERFACE.md` §3.1 still holds, including idempotent repeated `True`.
+- **The GameEngine input is unchanged.** It keeps receiving `process_event(action, is_active, timestamp)`. Everything in `CAR_FRONTEND_INTERFACE.md` §3.1 still holds, including idempotent repeated `True`.
 - **An occurrence runs from the timestamp of the record where the bit became 1 to the timestamp of the record where it became 0.** There is no back-dating. CVEngine's smoothing delays **both** edges by up to its window (about 0.3 to 0.5 s), so durations are nearly unbiased but the occurrence sits up to about half a second late in time. If CVEngine's smoothing were asymmetric (a long delay on one edge only), every duration would be biased by the difference. Ask the CVEngine owner to keep it symmetric.
 - **`grace_seconds` is the only hold.** CVEngine adds none, so an occurrence shorter than its grace is still recorded in `occurrences` and costs nothing (`score_occurrence == 0`), exactly as `CAR_FRONTEND_INTERFACE.md` §3.1 rule 4 describes.
 - **Unseen moments are never penalized.** CVEngine sends `0` when it can't tell (§4.4). So the score can only be too lenient, never wrongly harsh, from an undetected hand or face. Keep that in mind when you tune penalties: a driver CVEngine can't see well scores better.
-- **Simultaneous bits are scored independently.** `0x30` opens two occurrences (`HANDS_OFF_WHEEL` and `PHONE_USE`) at the same time, and their penalties add up. Priority has no effect on scoring.
+- **Simultaneous bits: only the most severe one is penalized** (overlap rule, `GameEngine.PRIORITY`: `EYES_CLOSED > PHONE_CALL > PHONE_USE > EYES_OFF_ROAD > HANDS_OFF_WHEEL > EATING_DRINKING > SMOKING > YAWN`). `0x30` still opens two occurrences (`HANDS_OFF_WHEEL` and `PHONE_USE`), and both are in `occurrences`. But each occurrence is penalized only for the seconds that no higher-priority occurrence covers, so here `PHONE_USE` is penalized and the fully covered `HANDS_OFF_WHEEL` costs nothing (`count == 0`, `score_occurrence == 0`). This scoring priority is separate from the bit order in §5, which only orders the updates.
 - **A bit still `1` at the end.** `end_drive(ts)` closes it at `ts`, as already specified.
 - **Danger: a stream that stops while a bit is `1`.** If CVEngine dies or the camera drops with a bit set, the occurrence stays open and is scored up to `end_drive`, which can be the rest of the whole drive. This is the main reason for the gap rule in §8.1. For the score it matters more than for the alerts.
 - **Not implemented yet.** Bits 7 and 6 are never set today. `EYES_CLOSED` and `EYES_OFF_ROAD` scoring must still work, because the simulator can trigger them and they will be wired in later.
@@ -116,7 +116,7 @@ Timestamps are seconds. `S` is a fresh `SafetySystem` after `start_drive(0.0)`. 
 
 1. Records `(1.0, 0x20)`, `(1.2, 0x20)`, ..., `(4.0, 0x20)`, `(4.2, 0x00)`, then `end_drive(10.0)` → one `HANDS_OFF_WHEEL` occurrence from 1.0 to 4.2 (duration 3.2 s). `actions["HANDS_OFF_WHEEL"].count == 1`.
 2. Records `(1.0, 0x20)`, `(1.5, 0x00)` → the occurrence (0.5 s) is in `occurrences`, but `count == 0` and `score_occurrence(occ) == 0`.
-3. `(0.0, 0x30)` then `(5.0, 0x00)` → both `HANDS_OFF_WHEEL` and `PHONE_USE` have an occurrence from 0.0 to 5.0, and the penalties add up. `PHONE_CALL` has `count == 0`.
+3. `(0.0, 0x30)` then `(5.0, 0x00)` → both `HANDS_OFF_WHEEL` and `PHONE_USE` have an occurrence from 0.0 to 5.0. Only `PHONE_USE` is penalized (overlap rule, §6): `HANDS_OFF_WHEEL` and `PHONE_CALL` have `count == 0`.
 4. `0x0F`, `0x2F`, `256`, `-1`, `"x"`, `None`, `True`, a NaN timestamp → the invalid ones leave no occurrence behind, nothing raises. `0x2F` is scored exactly like `0x20`.
 5. `(5.0, 0x20)` then `(4.0, 0x00)` (timestamp goes backwards) → the second record is ignored, and the occurrence is still open.
 6. `(2.0, 0x20)` as the last record, then `end_drive(10.0)` → the occurrence is closed at 10.0 (duration 8.0).

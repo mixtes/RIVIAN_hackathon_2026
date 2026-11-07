@@ -355,8 +355,9 @@ def test_end_session_clears_alerts_then_sends_result(core, clock) -> None:
     assert result["user_id"]
     assert result["engine_version"] == ENGINE_VERSION
     assert result["extra"]["end_reason"] == "ENGINE"
-    # still-active action is closed at end of drive: 8 s phone call = 1 + 0.5*8 = 5 pts
-    assert result["score"] == 95.0
+    # still-active action is closed at end of drive: 8 s phone call, grace 1 s:
+    # penalty 1.0 * (1+7)^1.5 = 22.63 -> score 100 * 2^(-22.63/30) = 59.29
+    assert result["score"] == 59.29
     assert result["events"][0]["duration_s"] == 8.0
     assert not core.active_actions and core.status().alerts == {}
 

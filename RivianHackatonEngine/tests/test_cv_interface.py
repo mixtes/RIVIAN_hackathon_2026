@@ -195,19 +195,24 @@ class GameSideTests(unittest.TestCase):
         self.assertEqual(s.game.score_occurrence(occ), 0.0)
         self.assertEqual(r.score, 100.0)
 
-    def test_3_simultaneous_bits_scored_independently(self):
+    def test_3_simultaneous_bits_only_most_severe_penalized(self):
         s = _system()
         _hold(s, 0.0, 5.0, 0x30)              # records every 0.2 s, so no gap
         s.on_frame(5.0, 0x00)
         r = s.end_drive(10.0)
+        occs = {}
         for action in ("HANDS_OFF_WHEEL", "PHONE_USE"):
             [occ] = _occ(r, action)
             self.assertEqual((occ.start_time, occ.end_time), (0.0, 5.0))
+            occs[action] = occ
+        # Overlap rule: PHONE_USE covers HANDS_OFF_WHEEL completely.
+        self.assertGreater(s.game.score_occurrence(occs["PHONE_USE"]), 0)
+        self.assertEqual(s.game.score_occurrence(occs["HANDS_OFF_WHEEL"]), 0.0)
+        self.assertEqual(r.actions["PHONE_USE"].count, 1)
+        self.assertEqual(r.actions["HANDS_OFF_WHEEL"].count, 0)
+        self.assertEqual(r.actions["HANDS_OFF_WHEEL"].penalty, 0.0)
         self.assertEqual(r.actions["PHONE_CALL"].count, 0)
-        expected = sum(s.game.score_occurrence(o) for o in r.occurrences)
-        self.assertAlmostEqual(r.score, 100.0 - expected)
-        self.assertGreater(r.actions["HANDS_OFF_WHEEL"].penalty, 0)
-        self.assertGreater(r.actions["PHONE_USE"].penalty, 0)
+        self.assertAlmostEqual(sum(a.penalty for a in r.actions.values()), 100.0 - r.score)
 
     def test_4_invalid_and_reserved(self):
         a, b = _system(), _system()

@@ -16,11 +16,12 @@ def _report(engine):
     game = system.game
     game.start_drive(1000.0)
     game.process_event("phone_call", True, 1010.0)
-    game.process_event("phone_call", False, 1018.0)       # 8 s: 1 + 0.5*8 = 5 pts
+    game.process_event("phone_call", False, 1018.0)       # 8 s, grace 1: 1.0 * (1+7)^1.5 = 22.63
     game.process_event("eyes_off_road", True, 1030.0)
-    game.process_event("eyes_off_road", False, 1030.3)    # under 0.5 s grace: ignored
+    game.process_event("eyes_off_road", False, 1030.3)    # under 2 s grace: ignored
     game.process_event("eyes_off_road", True, 1045.0)
-    game.process_event("eyes_off_road", False, 1048.0)    # 3 s: 1 + 3 = 4 pts
+    game.process_event("eyes_off_road", False, 1048.0)    # 3 s, grace 2: 0.6 * (1+1)^1.5 = 1.70
+    # total 24.32, scaled by 30 s / 120 s drive = 6.08 -> score 100 * 2^(-6.08/30) = 86.89
     return game, game.end_drive(1120.0)
 
 
@@ -33,7 +34,7 @@ def test_drive_report_mapping(engine) -> None:
         is_penalized=lambda o: game.score_occurrence(o) > 0,
     ).model_dump(mode="json")
 
-    assert result["score"] == 91.0
+    assert result["score"] == 86.89
     assert result["started_at"] == "2026-11-06T08:00:00.000Z"
     assert result["ended_at"] == "2026-11-06T08:02:00.000Z"
     assert result["distance_km"] is None
@@ -48,7 +49,7 @@ def test_drive_report_mapping(engine) -> None:
         {"type": "EYES_OFF_ROAD", "started_at": "2026-11-06T08:00:45.000Z", "duration_s": 3.0},
     ]
     assert {k: v for k, v in result["extra"]["penalties"].items() if v} == {
-        "EYES_OFF_ROAD": 4.0, "PHONE_CALL": 5.0}
+        "EYES_OFF_ROAD": 0.91, "PHONE_CALL": 12.19}     # points lost, sum = 100 - score
     assert result["extra"]["end_reason"] == "MANUAL"
 
 

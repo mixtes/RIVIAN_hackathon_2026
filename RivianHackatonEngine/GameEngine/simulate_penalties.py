@@ -108,7 +108,7 @@ SCENARIOS: List[Scenario] = [
     ),
     Scenario(
         name="single_long_call",
-        description="Edge case: one 60s phone call, to check the per-occurrence cap.",
+        description="Edge case: one 60s phone call (penalty grows as duration ** 1.5).",
         events=[("PHONE_CALL", True, 60.0), ("PHONE_CALL", False, 120.0)],
         drive_duration=180.0,
         rank=None,
@@ -127,30 +127,23 @@ SCENARIOS: List[Scenario] = [
 # Config variants - different ways to balance the penalties
 # ---------------------------------------------------------------------------
 
-def scale_config(base: Dict[str, ActionScoreConfig], *, occurrence_mult: float = 1.0,
-                  duration_mult: float = 1.0, grace_delta: float = 0.0,
-                  cap_mult: float = 1.0) -> Dict[str, ActionScoreConfig]:
+def scale_config(base: Dict[str, ActionScoreConfig], *, weight_mult: float = 1.0,
+                  grace_delta: float = 0.0) -> Dict[str, ActionScoreConfig]:
     """Build a new config by scaling every rule in `base`."""
-    scaled = {}
-    for action, cfg in base.items():
-        cap = None if cfg.max_penalty_per_occurrence is None else cfg.max_penalty_per_occurrence * cap_mult
-        scaled[action] = ActionScoreConfig(
-            penalty_per_occurrence=cfg.penalty_per_occurrence * occurrence_mult,
-            penalty_per_second=cfg.penalty_per_second * duration_mult,
+    return {
+        action: ActionScoreConfig(
+            weight=cfg.weight * weight_mult,
             grace_seconds=max(0.0, cfg.grace_seconds + grace_delta),
-            max_penalty_per_occurrence=cap,
         )
-    return scaled
+        for action, cfg in base.items()
+    }
 
 
 CONFIG_VARIANTS: Dict[str, Dict[str, ActionScoreConfig]] = {
     "current": dict(DEFAULT_SCORE_CONFIG),
-    "lenient": scale_config(DEFAULT_SCORE_CONFIG, occurrence_mult=0.5, duration_mult=0.5,
-                             grace_delta=0.5, cap_mult=1.5),
-    "strict": scale_config(DEFAULT_SCORE_CONFIG, occurrence_mult=1.5, duration_mult=1.5,
-                            grace_delta=-0.25, cap_mult=0.75),
-    "duration_focused": scale_config(DEFAULT_SCORE_CONFIG, occurrence_mult=0.0, duration_mult=1.5),
-    "frequency_focused": scale_config(DEFAULT_SCORE_CONFIG, occurrence_mult=2.0, duration_mult=0.0),
+    "lenient": scale_config(DEFAULT_SCORE_CONFIG, weight_mult=0.5, grace_delta=0.5),
+    "strict": scale_config(DEFAULT_SCORE_CONFIG, weight_mult=1.5, grace_delta=-0.25),
+    "no_grace": scale_config(DEFAULT_SCORE_CONFIG, grace_delta=-100.0),
 }
 
 
