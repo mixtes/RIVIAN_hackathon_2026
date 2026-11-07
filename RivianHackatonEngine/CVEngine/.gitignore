@@ -17,3 +17,7 @@ runs/
 
 # OpenVINO exports of the YOLO models (export_openvino.py)
 *_openvino_model/
+
+# keep the committee demo videos in git (must stay after the *.mp4 / *.csv rules above)
+!use_this_videos/
+!use_this_videos/*.mp4
