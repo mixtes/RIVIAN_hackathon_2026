@@ -49,6 +49,8 @@ class FakeGateway(private val log: MutableList<String> = mutableListOf()) : Engi
     override suspend fun startSession(request: SessionStartRequest): StartOutcome { started += request; return startOutcome }
     override fun endSession(sessionId: String, reason: EndReason) { ended += sessionId to reason }
     override fun ackResult(sessionId: String) { acks += sessionId; log += "ack:$sessionId" }
+    val dismissed = mutableListOf<Pair<String, String?>>()
+    override fun dismissAlert(alertId: String, sessionId: String?) { dismissed += alertId to sessionId }
     override fun dropConnection() = Unit
 }
 

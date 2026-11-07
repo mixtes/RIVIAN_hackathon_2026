@@ -130,6 +130,86 @@ class WheelCalibrationTests(unittest.TestCase):
             runpy.run_path(str(Path(__file__).with_name('render.py')), run_name='__main__')
 
 
+class WheelRoiTests(unittest.TestCase):
+    SIZE = (1920, 1536)
+
+    def candidates(self, polygon, n=4, conf=0.1):
+        mask = np.zeros((self.SIZE[1], self.SIZE[0]), np.uint8)
+        cv2.fillPoly(mask, [polygon], 1)
+        x, y, w, h = cv2.boundingRect(polygon)
+        return [(conf, mask, [x, y, x + w, y + h])] * n
+
+    def test_prior_is_bottom_right_and_ellipse_like(self):
+        prior = auto_wheel.prior_polygon(self.SIZE)
+        cx, cy = prior.mean(axis=0)
+        self.assertGreater(cx, 0.62 * self.SIZE[0])
+        self.assertGreater(cy, 0.72 * self.SIZE[1])
+        self.assertAlmostEqual(auto_wheel.polygon_iou(prior, prior, self.SIZE), 1.0)
+
+    def test_low_confidence_detection_agreeing_with_prior_is_accepted(self):
+        polygon, info = auto_wheel.resolve_wheel(
+            self.candidates(auto_wheel.prior_polygon(self.SIZE)), self.SIZE)
+        self.assertEqual(info['source'], 'detected')
+        self.assertGreater(info['prior_iou'], 0.9)
+
+    def test_detection_far_from_prior_is_rejected_unless_fallback_requested(self):
+        far = auto_wheel.ellipse_polygon((700, 500), (200, 300), 0)
+        with self.assertRaisesRegex(ValueError, 'disagrees'):
+            auto_wheel.resolve_wheel(self.candidates(far), self.SIZE)
+        polygon, info = auto_wheel.resolve_wheel(self.candidates(far), self.SIZE, prior_fallback=True)
+        self.assertEqual(info['source'], 'prior')
+        np.testing.assert_array_equal(polygon, auto_wheel.prior_polygon(self.SIZE))
+
+    def test_no_candidates_fails_strict_and_uses_labelled_prior_when_allowed(self):
+        with self.assertRaisesRegex(ValueError, 'Need at least'):
+            auto_wheel.resolve_wheel([], self.SIZE)
+        _, info = auto_wheel.resolve_wheel([], self.SIZE, prior_fallback=True)
+        self.assertEqual(info['source'], 'prior')
+
+    def test_candidate_gate_rejects_crop_filling_and_far_away_masks(self):
+        h, w = 200, 200
+        frame = np.zeros((h, w, 3), np.uint8)
+
+        def predict(mask_polygon):
+            box = Mock()
+            box.xyxy = [[0, 0, 5, 5]]
+            box.conf.item.return_value = 0.5
+            model = Mock()
+            model.predict.return_value = [SimpleNamespace(
+                masks=SimpleNamespace(xy=[np.array(mask_polygon, np.float32)]), boxes=[box])]
+            return model
+
+        x0, y0 = auto_wheel.roi_origin(w, h)
+        cw, ch = w - x0, h - y0
+        whole = [[0, 0], [cw, 0], [cw, ch], [0, ch]]             # fills the whole crop
+        self.assertEqual(auto_wheel.wheel_candidates(predict(whole), frame), [])
+        top_left = [[0, 0], [30, 0], [30, 30], [0, 30]]          # centroid outside the prior box
+        self.assertEqual(auto_wheel.wheel_candidates(predict(top_left), frame), [])
+        centre = [[cw * .45, ch * .35], [cw * .85, ch * .35], [cw * .85, ch * .75], [cw * .45, ch * .75]]
+        self.assertEqual(len(auto_wheel.wheel_candidates(predict(centre), frame)), 1)
+
+    def test_calibrator_locks_after_warmup_without_seeking(self):
+        size = self.SIZE
+        candidate = self.candidates(auto_wheel.prior_polygon(size), n=1)[0]
+        calibrator = auto_wheel.WheelCalibrator(model=Mock(), warmup=4)
+        frame = np.zeros((size[1], size[0], 3), np.uint8)
+        with patch.object(auto_wheel, 'wheel_candidates', return_value=[candidate]):
+            states = [calibrator.add_frame(frame) for _ in range(4)]
+        self.assertEqual(states, ['collecting'] * 3 + ['locked'])
+        self.assertEqual(calibrator.info['source'], 'detected')
+        self.assertGreater(calibrator.margin, 0)
+        self.assertEqual(calibrator.add_frame(frame), 'locked')   # no further inference
+
+    def test_calibrator_reports_failure_when_fallback_is_disabled(self):
+        calibrator = auto_wheel.WheelCalibrator(model=Mock(), warmup=3, prior_fallback=False)
+        frame = np.zeros((100, 100, 3), np.uint8)
+        with patch.object(auto_wheel, 'wheel_candidates', return_value=[]):
+            for _ in range(3):
+                calibrator.add_frame(frame)
+        self.assertEqual(calibrator.status, 'failed')
+        self.assertIn('Need at least', calibrator.error)
+
+
 class WheelConsensusTests(unittest.TestCase):
     def test_boxes_without_masks_never_become_a_wheel_zone(self):
         capture = Mock()
@@ -230,117 +310,6 @@ class WheelConsensusTests(unittest.TestCase):
         self.assertEqual(len(outline), 1)
         self.assertEqual(cv2.boundingRect(outline[0]), (54, 54, 53, 53))
         self.assertEqual(auto_wheel.tolerance_outline(polygon, 0, (200, 200)), [])
-
-
-WHEEL_POINTS = np.array([[60, 60], [140, 60], [140, 140], [60, 140]], np.float32)
-
-
-def candidate(confidence=0.5, points=WHEEL_POINTS):
-    x1, y1 = points.min(axis=0)
-    x2, y2 = points.max(axis=0)
-    return confidence, points, [float(x1), float(y1), float(x2), float(y2)]
-
-
-class LiveCalibrationTests(unittest.TestCase):
-    def make(self, results, **settings):
-        calls = []
-        sequence = iter(results)
-
-        def segment(model, frame):
-            calls.append(frame)
-            return next(sequence)
-
-        settings = dict(interval_s=1.0, samples=4, timeout_s=10.0, **settings)
-        calibrator = auto_wheel.LiveWheelCalibrator(None, (200, 200), segment=segment, **settings)
-        return calibrator, calls
-
-    @staticmethod
-    def frame():
-        return np.zeros((200, 200, 3), np.uint8)
-
-    def feed(self, calibrator, until_s, fps=30):
-        for i in range(int(until_s * fps) + 1):
-            if calibrator.add_frame(self.frame(), i / fps) != calibrator.CALIBRATING:
-                break
-
-    def test_locks_from_spaced_samples_using_only_past_frames(self):
-        calibrator, calls = self.make([candidate()] * 10)
-        self.feed(calibrator, 10)
-        self.assertEqual(calibrator.state, calibrator.LOCKED)
-        self.assertEqual(len(calls), 4)
-        self.assertAlmostEqual(calibrator.record['locked_after_s'], 3.0)
-        self.assertAlmostEqual(calibrator.record['window_s'], 3.0)
-        self.assertEqual(calibrator.record['mode'], 'live')
-        wheel = np.array(calibrator.record['wheel'])
-        self.assertTrue(rules.on_wheel((100, 100), wheel, 0))
-        self.assertFalse(rules.on_wheel((20, 20), wheel, 0))
-
-    def test_no_further_inference_after_lock(self):
-        calibrator, calls = self.make([candidate()] * 10)
-        self.feed(calibrator, 10)
-        for t in (20.0, 21.0, 22.0):
-            self.assertEqual(calibrator.add_frame(self.frame(), t), calibrator.LOCKED)
-        self.assertEqual(len(calls), 4)
-
-    def test_sliding_window_recovers_after_early_misses(self):
-        calibrator, calls = self.make([None, None, candidate(), candidate(), candidate(), candidate()])
-        self.feed(calibrator, 10)
-        self.assertEqual(calibrator.state, calibrator.LOCKED)
-        self.assertEqual(len(calls), 5)
-        self.assertEqual(calibrator.record['sample_count'], 3)
-
-    def test_low_confidence_fails_at_timeout_without_lowering_threshold(self):
-        calibrator, calls = self.make([candidate(0.1)] * 100)
-        self.feed(calibrator, 20)
-        self.assertEqual(calibrator.state, calibrator.FAILED)
-        self.assertIn('confidence', calibrator.reason)
-        self.assertIsNone(calibrator.record)
-        self.assertEqual(len(calls), 11)
-
-    def test_backwards_timestamp_resets_calibration(self):
-        calibrator, calls = self.make([candidate()] * 10)
-        for t in (100.0, 101.0, 102.0):
-            calibrator.add_frame(self.frame(), t)
-        calibrator.add_frame(self.frame(), 5.0)
-        self.assertEqual(len(calibrator.attempts), 1)
-        self.assertEqual(calibrator.start_s, 5.0)
-        self.assertEqual(calibrator.state, calibrator.CALIBRATING)
-
-    def test_rejects_frames_of_wrong_size(self):
-        calibrator, _ = self.make([candidate()])
-        with self.assertRaisesRegex(ValueError, 'Frame size'):
-            calibrator.add_frame(np.zeros((100, 200, 3), np.uint8), 0.0)
-
-    def test_live_record_loads_in_rules_and_writes_preview(self):
-        calibrator, _ = self.make([candidate()] * 10)
-        self.feed(calibrator, 10)
-        with tempfile.TemporaryDirectory() as directory:
-            target = str(Path(directory) / 'wheel.json')
-            preview = auto_wheel.save_calibration(calibrator.record, calibrator.preview_frame, target)
-            self.assertTrue(Path(preview).is_file())
-            wheel, margin = rules.load_wheel(str(Path(directory) / 'cache.npz'), (200, 200))
-            np.testing.assert_array_equal(wheel, calibrator.record['wheel'])
-            self.assertEqual(margin, calibrator.record['wrist_margin_px'])
-
-    def test_segment_wheel_keeps_best_plausible_mask(self):
-        small = WHEEL_POINTS * 0.5 + 40          # 40x40 box: 4% of a 200x200 frame
-        huge = np.array([[0, 0], [199, 0], [199, 199], [0, 199]], np.float32)
-
-        def box(points, confidence):
-            x1, y1 = points.min(axis=0)
-            x2, y2 = points.max(axis=0)
-            return SimpleNamespace(xyxy=[np.array([x1, y1, x2, y2])], conf=np.float32(confidence))
-
-        model = Mock()
-        model.predict.return_value = [SimpleNamespace(
-            boxes=[box(huge, 0.9), box(small, 0.3), box(small, 0.6)],
-            masks=SimpleNamespace(xy=[huge, small, small]))]
-        confidence, points, _ = auto_wheel.segment_wheel(model, self.frame())
-        self.assertAlmostEqual(confidence, 0.6, places=5)
-        np.testing.assert_array_equal(points, small)
-        model.predict.return_value = [SimpleNamespace(boxes=[box(huge, 0.9)],
-                                                      masks=SimpleNamespace(xy=[huge]))]
-        self.assertIsNone(auto_wheel.segment_wheel(model, self.frame()))
 
 
 class PhoneRuleTests(unittest.TestCase):

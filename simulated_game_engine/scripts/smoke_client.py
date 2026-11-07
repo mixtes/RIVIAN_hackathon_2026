@@ -4,9 +4,11 @@
     uv run python scripts/smoke_client.py --end-after 20        # send session.end after 20 s
     uv run python scripts/smoke_client.py --url ws://10.0.2.2:8765/ws
 
-It sends hello + session.start, prints alerts as they arrive, and acks the drive.result
-(unless --no-ack, to test re-delivery). Pair it with the bridge running e.g.
-`--scenario demo --fast` or drive it from the bridge CLI (`start phone_call`, `end`).
+It sends hello + session.start, prints alerts as they arrive, dismisses latched alerts
+(`requires_ack`, e.g. EYES_CLOSED) after --dismiss-after seconds like a driver pressing
+Dismiss, and acks the drive.result (unless --no-ack, to test re-delivery). Pair it with the
+bridge running e.g. `--scenario demo --fast` or drive it from the bridge CLI
+(`start phone_call`, `end`).
 """
 
 from __future__ import annotations
@@ -33,8 +35,9 @@ def show(msg: dict) -> None:
     t, pl = msg.get("type"), msg.get("payload", {})
     stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     if t == "alert":
+        ack = "  [needs dismiss]" if pl.get("requires_ack") else ""
         print(f"{stamp}  ALERT {pl['level']:<8} {pl['type']:<14} {pl['duration_so_far_s']:>5}s "
-              f"\"{pl['message']}\" id={pl['alert_id'][:8]}")
+              f"\"{pl['message']}\" id={pl['alert_id'][:8]}{ack}")
     elif t == "alert.clear":
         print(f"{stamp}  CLEAR id={pl['alert_id'][:8]}")
     elif t == "drive.result":
@@ -54,6 +57,8 @@ async def main() -> int:
                     help="send session.end after N seconds (default: wait for the bridge)")
     ap.add_argument("--timeout", type=float, default=300, help="give up after N seconds")
     ap.add_argument("--no-ack", action="store_true", help="don't ack drive.result")
+    ap.add_argument("--dismiss-after", type=float, default=2.0,
+                    help="dismiss latched alerts after N seconds (default 2; negative = never)")
     args = ap.parse_args()
     sid = args.session_id or str(uuid.uuid4())
 
@@ -71,11 +76,26 @@ async def main() -> int:
                 await ws.send(envelope("session.end", session_id=sid, reason="MANUAL"))
 
         end_task = asyncio.create_task(ender())
+        dismissing: set[str] = set()
+        tasks: set[asyncio.Task[None]] = set()
+
+        async def dismiss_later(alert_id: str) -> None:
+            await asyncio.sleep(args.dismiss_after)
+            print(f"sending alert.dismiss id={alert_id[:8]}")
+            await ws.send(envelope("alert.dismiss", alert_id=alert_id, session_id=sid))
+
         try:
             async with asyncio.timeout(args.timeout):
                 async for raw in ws:
                     msg = json.loads(raw)
                     show(msg)
+                    pl = msg.get("payload", {})
+                    if (msg["type"] == "alert" and pl.get("requires_ack")
+                            and args.dismiss_after >= 0 and pl["alert_id"] not in dismissing):
+                        dismissing.add(pl["alert_id"])
+                        task = asyncio.create_task(dismiss_later(pl["alert_id"]))
+                        tasks.add(task)
+                        task.add_done_callback(tasks.discard)
                     if msg["type"] == "drive.result" and msg["payload"]["session_id"] == sid:
                         if not args.no_ack:
                             await ws.send(envelope("drive.result.ack", session_id=sid))
@@ -86,6 +106,8 @@ async def main() -> int:
             return 1
         finally:
             end_task.cancel()
+            for task in tasks:
+                task.cancel()
     return 1
 
 

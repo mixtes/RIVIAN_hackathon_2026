@@ -1,13 +1,12 @@
 package com.hackathon.drivescore.feature.settings
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -28,7 +27,13 @@ import androidx.compose.material3.Surface
 import com.hackathon.drivescore.R
 import com.hackathon.drivescore.app.LocalDrivingState
 import com.hackathon.drivescore.core.common.Formatters
+import com.hackathon.drivescore.core.designsystem.Avatar
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarDimens
+import com.hackathon.drivescore.core.designsystem.CarScreen
+import com.hackathon.drivescore.core.designsystem.CarShapes
+import com.hackathon.drivescore.core.designsystem.GhostButton
+import com.hackathon.drivescore.core.designsystem.Space
 import com.hackathon.drivescore.core.designsystem.EmptyState
 import com.hackathon.drivescore.core.designsystem.Keypad
 import com.hackathon.drivescore.core.designsystem.PinDots
@@ -136,28 +141,32 @@ class SettingsViewModel @Inject constructor(
 fun SettingsScreen(onDebug: () -> Unit, vm: SettingsViewModel = hiltViewModel()) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     if (LocalDrivingState.current == DrivingState.MOVING) { EmptyState(stringResource(R.string.available_when_parked)); return }
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())) {
-        Text(stringResource(R.string.nav_settings), style = MaterialTheme.typography.headlineLarge)
-        VSpace(16.dp)
+    CarScreen(title = stringResource(R.string.nav_settings)) {
         ui.driver?.let { d ->
-            SectionCard(Modifier.fillMaxWidth()) {
-                Column {
-                    Text(stringResource(R.string.profile), style = MaterialTheme.typography.titleMedium)
-                    Text("@${d.username}", style = MaterialTheme.typography.bodyLarge)
-                    Text(d.displayName, style = MaterialTheme.typography.bodyLarge)
-                    Text("${Formatters.flagEmoji(d.regionCode)} ${d.regionCode}", style = MaterialTheme.typography.bodyLarge)
-                    Text(stringResource(R.string.edit_in_phone_app), color = CarColors.Muted, style = MaterialTheme.typography.bodyMedium)
+            SectionCard(Modifier.fillMaxWidth(), title = stringResource(R.string.profile)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.L)) {
+                    Avatar(d.initials, d.avatarColor, 96.dp)
+                    Column(Modifier.weight(1f)) {
+                        Text(d.displayName, style = MaterialTheme.typography.headlineMedium)
+                        Text("@${d.username} · ${Formatters.flagEmoji(d.regionCode)} ${d.regionCode}", style = MaterialTheme.typography.bodyLarge, color = CarColors.Muted)
+                    }
                 }
+                VSpace(Space.M)
+                Text(stringResource(R.string.edit_in_phone_app), color = CarColors.Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
-        VSpace(24.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            PrimaryButton(stringResource(R.string.change_pin), vm::openChangePin)
-            SecondaryButton(stringResource(R.string.lock_now), vm::lockNow)
-            PrimaryButton(stringResource(if (ui.removing) R.string.removing else R.string.remove_me), vm::requestRemove, enabled = !ui.removing, color = CarColors.Red)
-            TextButton(onClick = onDebug) { Text(stringResource(R.string.debug_settings)) }
+        VSpace(Space.L)
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
+            PrimaryButton(stringResource(R.string.change_pin), vm::openChangePin, Modifier.weight(1f))
+            SecondaryButton(stringResource(R.string.lock_now), vm::lockNow, Modifier.weight(1f))
         }
-        ui.toast?.let { VSpace(16.dp); Text(stringResource(it), color = CarColors.Green, style = MaterialTheme.typography.bodyLarge) }
+        VSpace(Space.L)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            PrimaryButton(stringResource(if (ui.removing) R.string.removing else R.string.remove_me), vm::requestRemove, enabled = !ui.removing, color = CarColors.Red)
+            Spacer(Modifier.weight(1f))
+            GhostButton(stringResource(R.string.debug_settings), onDebug, color = CarColors.Muted)
+        }
+        ui.toast?.let { VSpace(Space.M); Text(stringResource(it), color = CarColors.Green, style = MaterialTheme.typography.bodyLarge) }
     }
 
     ui.removeWarning?.let { n ->
@@ -172,8 +181,8 @@ fun SettingsScreen(onDebug: () -> Unit, vm: SettingsViewModel = hiltViewModel())
 
     ui.changePin?.let { cp ->
         Dialog(onDismissRequest = vm::closeChangePin, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Surface(color = CarColors.Surface, modifier = Modifier.padding(32.dp)) {
-                Row(Modifier.padding(32.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(48.dp)) {
+            Surface(color = CarColors.Surface, shape = CarShapes.Card, border = BorderStroke(1.dp, CarColors.Outline), modifier = Modifier.padding(CarDimens.ScreenPadding)) {
+                Row(Modifier.padding(CarDimens.ScreenPadding), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.XXL)) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             stringResource(
@@ -185,11 +194,11 @@ fun SettingsScreen(onDebug: () -> Unit, vm: SettingsViewModel = hiltViewModel())
                             ),
                             style = MaterialTheme.typography.headlineMedium,
                         )
-                        VSpace(16.dp)
+                        VSpace(Space.L)
                         PinDots(maxOf(4, cp.entered.length), cp.entered.length)
-                        cp.message?.let { VSpace(12.dp); Text(stringResource(it), color = CarColors.Red) }
-                        VSpace(16.dp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        cp.message?.let { VSpace(Space.S); Text(stringResource(it), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
+                        VSpace(Space.L)
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.M)) {
                             SecondaryButton(stringResource(R.string.cancel), vm::closeChangePin)
                             PrimaryButton(stringResource(R.string.next), vm::pinNext, enabled = cp.entered.length >= 4)
                         }

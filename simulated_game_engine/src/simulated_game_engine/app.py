@@ -37,10 +37,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help=f"RivianHackatonEngine folder (default {default_engine_path()}, "
                          f"or ${ENGINE_PATH_ENV})")
     ap.add_argument("--tick-ms", type=int, default=100, help="engine tick period (default 100)")
-    ap.add_argument("--tick-mode", choices=("per-action", "engine"), default="per-action",
-                    help="per-action (default): re-report each active action so every "
-                         "escalation is delivered; engine: AlertEngine.tick(), which returns "
-                         "only the most severe alert per tick")
     ap.add_argument("--engine-version", default=None,
                     help="engine_version reported in hello and drive.result")
     ap.add_argument("--no-cli", action="store_true",
@@ -67,10 +63,11 @@ async def run(args: argparse.Namespace) -> int:
     core = BridgeCore(
         engine.new_system(), SystemClock(),
         engine_version=args.engine_version or default_engine_version(engine.version),
-        tick_mode=args.tick_mode,
+        detected_actions=engine.detected_actions,
     )
-    log.info("engine loaded from %s; configured actions: %s",
-             engine.path, ", ".join(core.configured_actions))
+    log.info("engine %s loaded from %s; configured actions: %s; detected: %s",
+             engine.version or "?", engine.path, ", ".join(core.configured_actions),
+             ", ".join(core.detected_actions or ["(not declared)"]))
     server = BridgeServer(core, host=args.host, port=args.port, path=args.path,
                           tick_interval_s=args.tick_ms / 1000)
     await server.start()

@@ -20,7 +20,9 @@ import kotlinx.coroutines.sync.withLock
 interface AlertOutput {
     fun play(kind: SoundKind)
     fun speak(text: String)
-    /** Heads-up notification; only called while the app is not in the foreground. */
+    /** Stops a still-playing alarm/chime and TTS (after a Dismiss). */
+    fun stopAudio()
+    /** Heads-up notification; only called while the app is not in the foreground. Latched alerts get a Dismiss action. */
     fun notify(alert: DisplayedAlert)
     fun cancel(alertId: String)
     fun cancelAll()
@@ -75,6 +77,14 @@ class AlertPresenter(
         )
     }
 
+    /**
+     * The driver pressed Dismiss on a latched alert (overlay button or notification action, spec §9.1/§9.3).
+     * Removes it locally at once and sends `alert.dismiss` to the engine.
+     */
+    fun dismiss(alertId: String) {
+        scope.launch { process { queue.dismiss(alertId, clock.nowMs()) } }
+    }
+
     fun stop() {
         jobs.forEach { it.cancel() }
         jobs = emptyList()
@@ -93,6 +103,8 @@ class AlertPresenter(
                 is AlertEffect.Speak -> output.speak(effect.text)
                 is AlertEffect.Notify -> if (!appInForeground.value) output.notify(effect.alert)
                 is AlertEffect.CancelNotification -> output.cancel(effect.alertId)
+                AlertEffect.StopAudio -> output.stopAudio()
+                is AlertEffect.SendDismiss -> gateway.dismissAlert(effect.alertId, effect.sessionId)
             }
         }
     }

@@ -24,11 +24,16 @@ Commands:
   auto on|off                 random driver behaviour during sessions
   scenario demo [fast|<speed>]  scripted ~2 min drive (waits for a session), then end
   scenario stop               cancel a running scenario
-  end                         end the drive now and send drive.result
+  dismiss                     dismiss every latched alert (as if the driver pressed Dismiss)
+  end                         end the whole drive now and send drive.result
   drop                        close the car's connection (to test reconnects)
   help                        this text
   quit                        stop the bridge
-Actions are engine keys, e.g. phone_call, eyes_off_road (case-insensitive)."""
+Actions are engine keys, e.g. phone_call, eyes_closed (case-insensitive).
+eyes_closed (drowsiness) is latched: its alert stays until dismissed in the app or here."""
+
+
+NO_ARG_COMMANDS = frozenset({"help", "?", "quit", "exit", "status", "end", "drop", "dismiss"})
 
 
 class Console:
@@ -39,7 +44,8 @@ class Console:
 
     async def run(self) -> None:
         words = ["status", "start", "stop", "pulse", "auto", "on", "off", "scenario",
-                 *SCENARIOS, "fast", "end", "drop", "help", "quit", *self.core.configured_actions]
+                 *SCENARIOS, "fast", "dismiss", "end", "drop", "help", "quit",
+                 *self.core.configured_actions]
         prompt: PromptSession[str] = PromptSession(
             completer=WordCompleter(words, ignore_case=True))
         print(HELP)
@@ -65,6 +71,11 @@ class Console:
         """Run one command. Returns False to quit."""
         args = shlex.split(line)
         cmd, rest = args[0].lower(), args[1:]
+        if cmd in NO_ARG_COMMANDS and rest:
+            # Never ignore extra words: `end eyes_off_road` used to end the whole drive.
+            hint = (f"; to stop an action use 'stop {rest[0]}'"
+                    if cmd == "end" and self.core.is_configured(rest[0]) else "")
+            raise ValueError(f"'{cmd}' takes no arguments{hint}")
         match cmd:
             case "help" | "?":
                 print(HELP)
@@ -87,6 +98,9 @@ class Console:
                 print(f"auto mode {'on' if self.sim.auto_enabled else 'off'}")
             case "scenario":
                 self._scenario(rest)
+            case "dismiss":
+                n = await self.sim.dismiss_all()
+                print(f"dismissed {n} latched alert(s)" if n else "no latched alert showing")
             case "end":
                 await self.sim.end()
             case "drop":
@@ -127,7 +141,8 @@ class Console:
         else:
             print("session:     none")
         print(f"active:      {', '.join(st.active_actions) or '-'}")
-        print(f"alert ids:   {st.alert_ids or '-'}")
+        alerts = "; ".join(f"{i[:8]} {d}" for i, d in st.alerts.items())
+        print(f"alerts:      {alerts or '-'}")
         print(f"configured:  {', '.join(st.configured_actions)}")
         print(f"unacked:     {', '.join(st.pending_results) or '-'}")
         print(f"auto mode:   {'on' if self.sim.auto_enabled else 'off'}; "

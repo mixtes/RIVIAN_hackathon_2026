@@ -105,6 +105,7 @@ class WebSocketEngineGateway(
                             message = p.message,
                             durationSoFarS = p.durationSoFarS,
                             ttlS = p.ttlS,
+                            requiresAck = p.requiresAck == true,
                         ),
                     ),
                 )
@@ -156,6 +157,13 @@ class WebSocketEngineGateway(
 
     override fun ackResult(sessionId: String) {
         send(EngineProtocol.Types.DRIVE_RESULT_ACK, SessionRef(sessionId))
+    }
+
+    override fun dismissAlert(alertId: String, sessionId: String?) {
+        // Not queued: if the socket is down, client.send drops it (the engine keeps ringing → new alert).
+        if (!send(EngineProtocol.Types.ALERT_DISMISS, AlertDismissPayload(alertId, sessionId))) {
+            log.w(TAG, "alert.dismiss for $alertId dropped (engine not connected)")
+        }
     }
 
     private inline fun <reified T> send(type: String, payload: T): Boolean =

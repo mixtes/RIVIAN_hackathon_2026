@@ -1,9 +1,11 @@
 package com.hackathon.drivescore.core.engine
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -33,6 +35,31 @@ class ProtocolTest {
         assertEquals(EngineMessage.AlertClear("x"), EngineCodec.decode("""{"v":1,"type":"alert.clear","msg_id":"a","ts":"t","payload":{"alert_id":"x"}}"""))
         val err = EngineCodec.decode("""{"v":1,"type":"error","msg_id":"a","ts":"t","payload":{"code":"NO_ACTIVE_SESSION","message":"m","ref_msg_id":"r"}}""")
         assertEquals("NO_ACTIVE_SESSION", (err as EngineMessage.Error).payload.code)
+    }
+
+    @Test fun `encodes alert dismiss with alert and session ids`() {
+        val env = EngineCodec.envelope(EngineProtocol.Types.ALERT_DISMISS, AlertDismissPayload("a1", "s1"), "m2", "2026-11-06T08:01:12.345Z")
+        val o = Json.parseToJsonElement(EngineCodec.encode(env)).jsonObject
+        assertEquals("alert.dismiss", o["type"]!!.jsonPrimitive.content)
+        assertEquals("1", o["v"]!!.jsonPrimitive.content)
+        assertEquals("m2", o["msg_id"]!!.jsonPrimitive.content)
+        assertEquals("2026-11-06T08:01:12.345Z", o["ts"]!!.jsonPrimitive.content)
+        val p = o["payload"]!!.jsonObject
+        assertEquals("a1", p["alert_id"]!!.jsonPrimitive.content)
+        assertEquals("s1", p["session_id"]!!.jsonPrimitive.content)
+        // No session: session_id is sent as an explicit null.
+        val noSession = Json.parseToJsonElement(
+            EngineCodec.encode(EngineCodec.envelope(EngineProtocol.Types.ALERT_DISMISS, AlertDismissPayload("a1", null), "m3", "t")),
+        ).jsonObject["payload"]!!.jsonObject
+        assertEquals(JsonNull, noSession["session_id"])
+    }
+
+    @Test fun `decodes requires_ack, absent or null means false`() {
+        fun alert(extra: String) = (EngineCodec.decode("""{"v":1,"type":"alert","msg_id":"a","ts":"t","payload":{"alert_id":"x","type":"EYES_CLOSED","level":"CRITICAL"$extra}}""") as EngineMessage.Alert).payload
+        assertEquals(true, alert(""","requires_ack":true""").requiresAck)
+        assertEquals(false, alert(""","requires_ack":false""").requiresAck)
+        assertNull(alert("").requiresAck)
+        assertNull(alert(""","requires_ack":null""").requiresAck)
     }
 
     @Test fun `decodes drive result and keeps the raw payload`() {

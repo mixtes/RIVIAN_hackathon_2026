@@ -41,7 +41,7 @@ All scripts use relative paths. Python 3.9 venv on the user's Mac (macOS, CPU), 
 
 ### Commands (per video)
 ```
-python3 auto_wheel.py my_video.mp4 out/wheel.json     # or live: python3 auto_wheel.py --live 0 out/wheel.json
+python3 auto_wheel.py my_video.mp4 out/wheel.json [--prior-fallback]
 python3 extract.py my_video.mp4 out/cache.npz
 python3 rules.py out/cache.npz
 python3 render.py my_video.mp4 out/cache.npz
@@ -57,32 +57,12 @@ polygons retain the 60 px tolerance. Rendering rejects a calibration whose dimen
 from the video or whose polygon/margin differs from the saved flags; re-run rules after calibration changes.
 Existing pose/phone caches can be reused without model inference.
 
-Automatic calibration samples up to 16 distinct frames, rejects masks below confidence 0.15,
-checks box consistency, and retains samples scoring at least 40% of the best consistent detection.
-At least three reliable masks are required. A pixel must belong to a strict majority of the retained
-masks to enter the consensus; the largest external contour is simplified without a convex hull or
-outward dilation. Boxes alone are never accepted as wheel masks. This prevents a few oversized
-detections from expanding the zone into the driver's torso or dashboard. The output records
-`algorithm: "mask_majority_v1"` and the retained `sample_count`. Preview and video show the tight
-wheel contour in cyan and the separate wrist-tolerance boundary in blue, so the accepted area is visible.
-Existing calibrations are not automatically replaced: re-run `auto_wheel.py`, then rules and rendering,
-to use the new algorithm. Retain the old output directory when comparing results.
-The polygon still includes any enclosed interior: 2D wrist overlap is not proof of rim contact or grip,
-and consistently wrong masks or an occluded rim can still produce incorrect calibration.
-
-### Live wheel calibration (no future frames)
-`python3 auto_wheel.py --live SOURCE [out/wheel.json]`, where SOURCE is a camera index, stream URL, or a
-video file read sequentially to simulate a camera. `LiveWheelCalibrator` (in `auto_wheel.py`) is the
-reusable component for a live pipeline: call `add_frame(frame, capture_timestamp_s)` for every frame.
-- It segments at most one frame per `LIVE_INTERVAL_S` (1 s), so samples are spread out and cheap.
-- After 16 samples, each new sample re-runs the same consensus and thresholds as video mode over a
-  sliding window of the latest 16 samples. Thresholds are not lowered for live use.
-- States: `CALIBRATING` (wheel monitoring unavailable), `LOCKED` (zone fixed; no further wheel
-  inference), `FAILED` after `LIVE_TIMEOUT_S` (60 s) without consensus.
-- A timestamp moving backwards (seek, clock jump) resets it. Frame-size changes are rejected.
-- Output is the same `wheel.json` format with `mode: "live"`, `locked_after_s`, and `window_s`.
-The camera and wheel are fixed per vehicle, so the intended live flow is: load a verified `wheel.json`
-for this camera if one exists; otherwise calibrate at startup, save it, and reuse it on later drives.
+Automatic calibration (`roi_ellipse_v2`, from main): segments only the bottom-right region of the frame,
+gates candidates by geometry (area, box size, solidity, centroid), votes a strict-majority mask, fits an
+ellipse to it and checks it against a prior ellipse for this camera. `--prior-fallback` uses the prior
+when detection fails and saves `source: "auto_wheel_prior"` so it is never mistaken for a detection.
+Live use: `WheelCalibrator` (in `auto_wheel.py`, used by `live.py`) locks after `WARMUP_FRAMES` fed
+frames, with the prior fallback on by default.
 While calibrating or failed, only wheel-based monitoring is unavailable; phone and face continue.
 
 Simulated live on five clips (frames fed in order): the three clips accepted by video mode locked

@@ -34,7 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -50,6 +49,12 @@ import com.hackathon.drivescore.app.LocalDrivingState
 import com.hackathon.drivescore.core.common.Formatters
 import com.hackathon.drivescore.core.designsystem.Avatar
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarDimens
+import com.hackathon.drivescore.core.designsystem.CarShapes
+import com.hackathon.drivescore.core.designsystem.CardTitle
+import com.hackathon.drivescore.core.designsystem.GhostButton
+import com.hackathon.drivescore.core.designsystem.Space
+import com.hackathon.drivescore.core.designsystem.carFieldColors
 import com.hackathon.drivescore.core.designsystem.EmptyState
 import com.hackathon.drivescore.core.designsystem.Keypad
 import com.hackathon.drivescore.core.designsystem.PinDots
@@ -95,29 +100,28 @@ fun AddDriverScreen(prefillUsername: String?, onDone: () -> Unit, vm: AddDriverV
         }
         return
     }
-    Box(Modifier.fillMaxSize().padding(32.dp)) {
+    Box(Modifier.fillMaxSize().padding(CarDimens.ScreenPadding)) {
         when (val step = ui.step) {
             AddStep.Choice -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text(stringResource(R.string.add_driver), style = MaterialTheme.typography.headlineLarge)
-                VSpace(32.dp)
-                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    PrimaryButton(stringResource(R.string.i_have_an_account), vm::chooseSignIn, Modifier.width(360.dp))
-                    PrimaryButton(stringResource(R.string.create_account), vm::chooseCreate, Modifier.width(360.dp), color = CarColors.Green)
+                VSpace(Space.XL)
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
+                    SecondaryButton(stringResource(R.string.i_have_an_account), vm::chooseSignIn, Modifier.width(360.dp))
+                    PrimaryButton(stringResource(R.string.create_account), vm::chooseCreate, Modifier.width(360.dp))
                 }
-                VSpace(24.dp)
-                SecondaryButton(stringResource(R.string.cancel), onDone)
+                VSpace(Space.L)
+                GhostButton(stringResource(R.string.cancel), onDone, color = CarColors.Muted)
             }
             is AddStep.SignIn -> SignInStep(step, ui.busy, vm, onCancel = onDone)
             is AddStep.Create -> CreateStep(step, ui.busy, ui.regions, vm)
             is AddStep.Welcome -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Avatar(initials(step.profile.displayName), step.profile.avatarColor, 140.dp)
-                VSpace(16.dp)
+                VSpace(Space.M)
                 Text(stringResource(R.string.welcome_name, step.profile.displayName), style = MaterialTheme.typography.headlineLarge)
                 Text("${Formatters.flagEmoji(step.profile.regionCode)} ${step.profile.regionCode} · @${step.profile.username}", style = MaterialTheme.typography.bodyLarge, color = CarColors.Muted)
-                VSpace(32.dp)
-                if (step.resetPin) Text(stringResource(R.string.already_on_car_reset_pin), style = MaterialTheme.typography.titleMedium)
-                VSpace(16.dp)
-                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                VSpace(Space.XL)
+                if (step.resetPin) { Text(stringResource(R.string.already_on_car_reset_pin), style = MaterialTheme.typography.titleMedium); VSpace(Space.L) }
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
                     SecondaryButton(stringResource(R.string.cancel), onDone)
                     PrimaryButton(stringResource(if (step.resetPin) R.string.reset_pin else R.string.choose_pin), vm::welcomeContinue)
                 }
@@ -125,12 +129,12 @@ fun AddDriverScreen(prefillUsername: String?, onDone: () -> Unit, vm: AddDriverV
             is AddStep.ChoosePin -> ChoosePinStep(step, ui.busy, vm)
             is AddStep.Done -> Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Avatar(initials(step.profile.displayName), step.profile.avatarColor, 140.dp)
-                VSpace(16.dp)
+                VSpace(Space.M)
                 Text(stringResource(R.string.profile_ready, step.profile.displayName), style = MaterialTheme.typography.headlineLarge)
-                VSpace(32.dp)
-                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                VSpace(Space.XL)
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
                     SecondaryButton(stringResource(R.string.done), onDone)
-                    PrimaryButton(stringResource(R.string.start_driving_now), { vm.startDrivingNow(); onDone() }, color = CarColors.Green)
+                    PrimaryButton(stringResource(R.string.start_driving_now), { vm.startDrivingNow(); onDone() })
                 }
             }
         }
@@ -150,11 +154,13 @@ private fun Field(
         value = value, onValueChange = onChange, singleLine = true,
         label = { Text(label, fontSize = 20.sp) },
         textStyle = TextStyle(fontSize = 24.sp, color = CarColors.OnDark),
+        shape = CarShapes.Control,
+        colors = carFieldColors(),
         isError = error != null,
         supportingText = error?.let { { Text(it.text(), fontSize = 18.sp) } },
         visualTransformation = if (password && !visible) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = if (password) KeyboardType.Password else keyboardType, capitalization = capitalization, autoCorrectEnabled = false),
-        trailingIcon = if (password) { { TextButton(onClick = { visible = !visible }) { Text(stringResource(if (visible) R.string.hide else R.string.show)) } } } else null,
+        trailingIcon = if (password) { { TextButton(onClick = { visible = !visible }) { Text(stringResource(if (visible) R.string.hide else R.string.show), color = CarColors.TealSoft) } } } else null,
         modifier = Modifier.fillMaxWidth().heightIn(min = 76.dp),
     )
 }
@@ -163,13 +169,13 @@ private fun Field(
 private fun SignInStep(s: AddStep.SignIn, busy: Boolean, vm: AddDriverViewModel, onCancel: () -> Unit) {
     Column(Modifier.fillMaxWidth(0.6f).verticalScroll(rememberScrollState())) {
         Text(stringResource(R.string.sign_in), style = MaterialTheme.typography.headlineLarge)
-        VSpace(24.dp)
+        VSpace(Space.L)
         Field(s.username, { vm.updateSignIn(username = it) }, stringResource(R.string.username), null)
-        VSpace(12.dp)
+        VSpace(Space.M)
         Field(s.password, { vm.updateSignIn(password = it) }, stringResource(R.string.password), null, password = true)
-        s.error?.let { VSpace(8.dp); Text(it.text(), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
-        VSpace(24.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+        s.error?.let { VSpace(Space.XS); Text(it.text(), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
+        VSpace(Space.L)
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
             SecondaryButton(stringResource(R.string.cancel), onCancel)
             PrimaryButton(stringResource(if (busy) R.string.signing_in else R.string.sign_in), vm::signIn, enabled = !busy)
         }
@@ -182,38 +188,39 @@ private fun CreateStep(s: AddStep.Create, busy: Boolean, regions: List<Region>, 
     val f = s.form
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text(stringResource(R.string.create_account), style = MaterialTheme.typography.headlineLarge)
-        VSpace(16.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            Column(Modifier.weight(1f)) {
+        VSpace(Space.L)
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.XL)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.XS)) {
                 Field(f.username, { v -> vm.updateForm { it.copy(username = v.lowercase().trim()) } }, stringResource(R.string.username), f.errors["username"])
                 Field(f.displayName, { v -> vm.updateForm { it.copy(displayName = v.take(40)) } }, stringResource(R.string.display_name), f.errors["display_name"], capitalization = KeyboardCapitalization.Words)
                 Field(f.password, { v -> vm.updateForm { it.copy(password = v) } }, stringResource(R.string.password), f.errors["password"], password = true)
                 Field(f.confirm, { v -> vm.updateForm { it.copy(confirm = v) } }, stringResource(R.string.confirm_password), f.errors["confirm"], password = true)
             }
             Column(Modifier.weight(1f)) {
-                Text(stringResource(R.string.region), style = MaterialTheme.typography.titleMedium)
+                CardTitle(stringResource(R.string.region))
+                VSpace(Space.S)
                 val name = regions.firstOrNull { it.code == f.regionCode }?.name ?: f.regionCode
                 SecondaryButton("${Formatters.flagEmoji(f.regionCode)} $name", { pickRegion = true }, Modifier.fillMaxWidth())
                 f.errors["region_code"]?.let { Text(it.text(), color = CarColors.Red) }
-                VSpace(24.dp)
-                Text(stringResource(R.string.avatar_color), style = MaterialTheme.typography.titleMedium)
-                VSpace(8.dp)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                VSpace(Space.L)
+                CardTitle(stringResource(R.string.avatar_color))
+                VSpace(Space.S)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.S), verticalArrangement = Arrangement.spacedBy(Space.S)) {
                     AVATAR_COLORS.forEach { c ->
                         Box(
                             Modifier.size(64.dp).clip(CircleShape).background(CarColors.parse(c))
-                                .border(if (c == f.avatarColor) 5.dp else 0.dp, Color.White, CircleShape)
+                                .then(if (c == f.avatarColor) Modifier.border(5.dp, CarColors.OnDark, CircleShape) else Modifier)
                                 .clickable { vm.updateForm { it.copy(avatarColor = c) } },
                         )
                     }
                 }
             }
         }
-        s.generalError?.let { VSpace(8.dp); Text(it.text(), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
-        VSpace(16.dp)
-        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+        s.generalError?.let { VSpace(Space.XS); Text(it.text(), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
+        VSpace(Space.L)
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.L)) {
             SecondaryButton(stringResource(R.string.back), vm::back)
-            PrimaryButton(stringResource(if (busy) R.string.creating else R.string.create_account), vm::createAccount, enabled = !busy, color = CarColors.Green)
+            PrimaryButton(stringResource(if (busy) R.string.creating else R.string.create_account), vm::createAccount, enabled = !busy)
         }
     }
     if (pickRegion) RegionPicker(regions, onPick = { code -> vm.updateForm { it.copy(regionCode = code) }; pickRegion = false }, onDismiss = { pickRegion = false })
@@ -228,14 +235,14 @@ private fun RegionPicker(regions: List<Region>, onPick: (String) -> Unit, onDism
         title = { Text(stringResource(R.string.region)) },
         text = {
             Column {
-                OutlinedTextField(q, { q = it }, singleLine = true, label = { Text(stringResource(R.string.search)) }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(q, { q = it }, singleLine = true, label = { Text(stringResource(R.string.search)) }, shape = CarShapes.Control, colors = carFieldColors(), modifier = Modifier.fillMaxWidth())
                 val filtered = regions.filter { q.isBlank() || it.name.contains(q, true) || it.code.equals(q, true) }
                 LazyColumn(Modifier.heightIn(max = 420.dp)) {
                     items(filtered, key = { it.code }) { r ->
                         Text(
                             "${Formatters.flagEmoji(r.code)}  ${r.name} (${r.code})",
                             style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.fillMaxWidth().clickable { onPick(r.code) }.padding(vertical = 16.dp),
+                            modifier = Modifier.fillMaxWidth().clickable { onPick(r.code) }.padding(vertical = Space.M),
                         )
                     }
                 }
@@ -246,14 +253,15 @@ private fun RegionPicker(regions: List<Region>, onPick: (String) -> Unit, onDism
 
 @Composable
 private fun ChoosePinStep(s: AddStep.ChoosePin, busy: Boolean, vm: AddDriverViewModel) {
-    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.XXL)) {
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(stringResource(if (s.first == null) R.string.choose_pin_title else R.string.confirm_pin_title), style = MaterialTheme.typography.headlineMedium)
+            VSpace(Space.XS)
             Text(stringResource(R.string.pin_hint), style = MaterialTheme.typography.bodyMedium, color = CarColors.Muted)
-            VSpace(24.dp)
+            VSpace(Space.XL)
             PinDots(maxOf(4, s.entered.length.coerceAtMost(6)), s.entered.length)
-            s.error?.let { VSpace(12.dp); Text(it.text(), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
-            VSpace(24.dp)
+            s.error?.let { VSpace(Space.S); Text(it.text(), color = CarColors.Red, style = MaterialTheme.typography.bodyLarge) }
+            VSpace(Space.XL)
             PrimaryButton(
                 stringResource(if (s.first == null) R.string.next else R.string.confirm),
                 { vm.pinNext() }, enabled = !busy && s.entered.length >= 4,

@@ -60,6 +60,15 @@ class EngineConnectionService : LifecycleService() {
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val result = super.onStartCommand(intent, flags, startId)
+        // "Dismiss" action on a latched alert's heads-up notification (spec §9.3).
+        if (intent?.action == ACTION_DISMISS_ALERT) {
+            intent.getStringExtra(EXTRA_ALERT_ID)?.let { alertPresenter.dismiss(it) }
+        }
+        return result
+    }
+
     private fun startInForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Driver monitoring", NotificationManager.IMPORTANCE_LOW))
@@ -88,6 +97,15 @@ class EngineConnectionService : LifecycleService() {
     companion object {
         private const val CHANNEL = "engine_service"
         private const val NOTIFICATION_ID = 1001
+        private const val ACTION_DISMISS_ALERT = "com.hackathon.drivescore.action.DISMISS_ALERT"
+        private const val EXTRA_ALERT_ID = "alert_id"
+
+        /** PendingIntent for a latched alert's notification "Dismiss" action; handled in [onStartCommand]. */
+        fun dismissAlertIntent(context: Context, alertId: String): PendingIntent = PendingIntent.getService(
+            context, alertId.hashCode(),
+            Intent(context, EngineConnectionService::class.java).setAction(ACTION_DISMISS_ALERT).putExtra(EXTRA_ALERT_ID, alertId),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, EngineConnectionService::class.java))

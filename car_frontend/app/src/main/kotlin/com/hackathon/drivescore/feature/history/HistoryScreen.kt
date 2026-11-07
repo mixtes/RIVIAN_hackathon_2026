@@ -1,12 +1,9 @@
 package com.hackathon.drivescore.feature.history
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -30,6 +27,9 @@ import com.hackathon.drivescore.R
 import com.hackathon.drivescore.core.common.Formatters
 import com.hackathon.drivescore.core.designsystem.Banner
 import com.hackathon.drivescore.core.designsystem.CarColors
+import com.hackathon.drivescore.core.designsystem.CarScreen
+import com.hackathon.drivescore.core.designsystem.Space
+import com.hackathon.drivescore.core.designsystem.VSpace
 import com.hackathon.drivescore.core.designsystem.EmptyState
 import com.hackathon.drivescore.core.designsystem.ScoreBadge
 import com.hackathon.drivescore.core.designsystem.SectionCard
@@ -84,14 +84,16 @@ fun HistoryScreen(onOpen: (String) -> Unit, vm: HistoryViewModel = hiltViewModel
     val listState = rememberLazyListState()
     val nearEnd by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 >= items.size - 3 } }
     LaunchedEffect(nearEnd, items.size) { if (nearEnd) vm.loadMore() }
-    Column(Modifier.fillMaxSize().padding(24.dp)) {
-        Text(stringResource(R.string.nav_history), style = MaterialTheme.typography.headlineLarge)
-        if (!online) Banner(stringResource(R.string.offline_saved_data), modifier = Modifier.padding(vertical = 12.dp))
+    CarScreen(title = stringResource(R.string.nav_history), scrollable = false) {
+        if (!online) {
+            Banner(stringResource(R.string.offline_saved_data), accent = CarColors.Amber)
+            VSpace(Space.L)
+        }
         if (items.isEmpty()) {
             EmptyState(stringResource(R.string.no_drives_yet))
-            return
+            return@CarScreen
         }
-        LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(Space.M)) {
             items(items, key = { it.id }) { item -> HistoryRow(item) { onOpen(item.id) } }
         }
     }
@@ -99,8 +101,8 @@ fun HistoryScreen(onOpen: (String) -> Unit, vm: HistoryViewModel = hiltViewModel
 
 @Composable
 private fun HistoryRow(item: HistoryItem, onClick: () -> Unit) {
-    SectionCard(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    SectionCard(Modifier.fillMaxWidth(), onClick = onClick) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.L)) {
             Column(Modifier.weight(1f)) {
                 Text(Formatters.relativeDateTime(item.endedAt), style = MaterialTheme.typography.titleMedium)
                 val car = if (item.otherCar && item.carName != null) " · ${item.carName}" else ""
@@ -110,8 +112,8 @@ private fun HistoryRow(item: HistoryItem, onClick: () -> Unit) {
                 )
             }
             when (item.syncState) {
-                SyncState.PENDING, SyncState.SYNCING -> Text("⇡ ", style = MaterialTheme.typography.titleMedium, color = CarColors.Amber)
-                SyncState.FAILED_PERMANENT -> Text("⚠ ", style = MaterialTheme.typography.titleMedium, color = CarColors.Red)
+                SyncState.PENDING, SyncState.SYNCING -> Text("⇡", style = MaterialTheme.typography.titleMedium, color = CarColors.Amber)
+                SyncState.FAILED_PERMANENT -> Text("⚠", style = MaterialTheme.typography.titleMedium, color = CarColors.Red)
                 SyncState.SYNCED -> Unit
             }
             ScoreBadge(item.score, Modifier.width(96.dp))
